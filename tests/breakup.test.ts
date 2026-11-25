@@ -21,6 +21,43 @@ test('quantized GLTF fuselage retains its full meter-scale dimensions when fract
   assert.equal(geometry.getAttribute('position').normalized, true, 'original quantized asset remains unchanged');
 });
 import { localPointToECEF } from '../src/math/coordinates';
+import { prepareFracture } from '../src/rendering/fracture.worker';
+import { snapshotAttribute } from '../src/rendering/breakupPreparation';
+
+test('worker snapshots deinterleave and decode normalized GLTF attributes without detaching assets', () => {
+  const buffer = new THREE.InterleavedBuffer(new Int16Array([32767, 0, -32767, 123, 0, 16384, 0, 456]), 4);
+  const attribute = new THREE.InterleavedBufferAttribute(buffer, 3, 0, true);
+  const snapshot = snapshotAttribute(attribute);
+  assert.equal(snapshot.array.byteLength, 6 * 4);
+  const values = Array.from(snapshot.array as Float32Array);
+  assert.deepEqual(values.slice(0, 3), [1, 0, -1]);
+  assert.ok(Math.abs(values[4] - 0.5) < 0.001);
+  assert.equal(snapshot.normalized, false);
+  assert.equal(buffer.array.length, 8);
+});
+
+test('worker fracture preserves quantized geometry and batches matching shell materials', () => {
+  const geometry = new THREE.CylinderGeometry(2, 2, 70, 32);
+  const p = geometry.getAttribute('position');
+  const quantized = new Int16Array(Array.from(p.array, value => Math.round(value / 35 * 32767)));
+  const attributes = {
+    position: { array: quantized, itemSize: 3, normalized: true },
+    normal: { array: geometry.getAttribute('normal').array, itemSize: 3, normalized: false },
+    uv: { array: geometry.getAttribute('uv').array, itemSize: 2, normalized: false },
+  };
+  const packet = { attributes, index: Array.from(geometry.index!.array), groups: [],
+    matrix: new THREE.Matrix4().makeScale(35, 35, 35).toArray(), materials: [0] };
+  const before = Array.from(quantized);
+  const pieces = prepareFracture([packet, packet, packet, packet]);
+  assert.equal(pieces.length, 28);
+  assert.equal(pieces.reduce((count, panels) => count + panels.length, 0), 28, 'four identical materials merge into one draw per fragment');
+  const ys = pieces.flatMap(panels => panels.flatMap(panel => {
+    const positions = panel.attributes.position.array as Float32Array;
+    return Array.from({ length: positions.length / 3 }, (_, i) => positions[i * 3 + 1]);
+  }));
+  assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 70) < 0.01);
+  assert.deepEqual(Array.from(quantized), before);
+});
 
 function surfaceArea(root: THREE.Object3D): number {
   let area = 0;
@@ -60,7 +97,7 @@ test('debris separates, pauses, settles, survives camera shifts and disposes its
   const originalMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
   assembly.add(new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 40, 16), originalMaterial));
   const origin = localPointToECEF({ x: -320, y: 25, z: 520 }, CAPE_FRAME);
-  const breakup = new SpacecraftBreakup(assembly, root, origin,
+  const breakup = new SpacecraftBreakup(fractureAssembly(assembly, root), origin,
     new THREE.Quaternion(CAPE_FRAME.localToECEF.x, CAPE_FRAME.localToECEF.y, CAPE_FRAME.localToECEF.z, CAPE_FRAME.localToECEF.w), { x: 0, y: 0, z: 0 });
   breakup.update(origin, 0);
   const initial = breakup.group.children.map(piece => piece.position.clone());

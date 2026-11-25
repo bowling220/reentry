@@ -74,6 +74,12 @@ async function bootstrap(): Promise<void> {
   };
 
   const sceneController = new SceneController(assets, hudRootEl, selectSpacecraftById);
+  sceneController.spacecraftVisuals.warmup = async group => {
+    const scene = sceneController.scene.clone(false);
+    scene.add(group);
+    await rendererManager.renderer.compileAsync(scene, cameraController.camera, sceneController.scene);
+    scene.remove(group);
+  };
 
   const loadScenario = (scenarioId: ScenarioId, keepInstalledProgram: boolean) => {
     demoRunning = false;
