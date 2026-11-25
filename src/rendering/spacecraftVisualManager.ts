@@ -4,10 +4,13 @@ import { Vec3d, distVec3 } from '../math/vec3d';
 import { SpacecraftEntity, SpacecraftManager } from '../simulation/spacecraftManager';
 import { ExhaustVfx } from './exhaustVfx';
 import { RocketVisual } from './rocketVisual';
+import { SpacecraftBreakup } from './spacecraftBreakup';
 
 interface VisualRig {
   visual: RocketVisual;
   exhaust: ExhaustVfx;
+  breakup: SpacecraftBreakup | null;
+  previousVelocity: Vec3d;
 }
 
 /**
@@ -28,6 +31,7 @@ export class SpacecraftVisualManager {
   public reset(): void {
     for (const rig of this.rigs.values()) {
       rig.exhaust.reset();
+      if (rig.breakup) { this.group.remove(rig.breakup.group); rig.breakup.dispose(); }
       this.group.remove(rig.visual.group);
       this.group.remove(rig.exhaust.smokeGroup);
     }
@@ -53,8 +57,20 @@ export class SpacecraftVisualManager {
       const d = distVec3(craft.dynamics.posECEF, cameraPosECEF);
       // Hide tiny 3D vehicle meshes when looking at Earth from deep orbital map distance (> 150 km away)
       const visible = !inMapView && d < 150_000;
-      rig.visual.group.visible = visible;
+      const crashed = craft.dynamics.status === 'CRASHED';
+      if (crashed && !rig.breakup) {
+        rig.visual.update(craft, cameraPosECEF);
+        rig.breakup = new SpacecraftBreakup(rig.visual.breakupSource, rig.visual.group,
+          craft.dynamics.posECEF, rig.visual.group.quaternion, rig.previousVelocity);
+        this.group.add(rig.breakup.group);
+      }
+      if (!crashed) rig.previousVelocity = { ...craft.dynamics.velECEF };
+      rig.visual.group.visible = visible && !crashed;
       rig.exhaust.smokeGroup.visible = visible;
+      if (rig.breakup) {
+        rig.breakup.group.visible = visible;
+        rig.breakup.update(cameraPosECEF, dt);
+      }
 
       if (visible) {
         rig.visual.update(craft, cameraPosECEF);
@@ -65,6 +81,7 @@ export class SpacecraftVisualManager {
     // Remove rigs for any craft no longer present (e.g. after reset)
     for (const [id, rig] of this.rigs.entries()) {
       if (!activeIds.has(id)) {
+        if (rig.breakup) { this.group.remove(rig.breakup.group); rig.breakup.dispose(); }
         this.group.remove(rig.visual.group);
         this.group.remove(rig.exhaust.smokeGroup);
         this.rigs.delete(id);
@@ -79,6 +96,6 @@ export class SpacecraftVisualManager {
     visual.engineNozzleAnchor.add(exhaust.plumeGroup);
     this.group.add(visual.group);
     this.group.add(exhaust.smokeGroup);
-    return { visual, exhaust };
+    return { visual, exhaust, breakup: null, previousVelocity: { ...craft.dynamics.velECEF } };
   }
 }

@@ -131,6 +131,7 @@ export class RocketVisual {
   public readonly engineNozzleAnchor: THREE.Group;
 
   private readonly assemblyRoot: THREE.Group;
+  public get breakupSource(): THREE.Object3D { return this.assemblyRoot; }
   private readonly assets: LoadedAssets;
   private legPivots: LegPivot[] = [];
   private finControls: FinControl[] = [];
