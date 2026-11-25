@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.reentry-tests-*/
+.env
+.env.*
+!.env.example
+*.log
+reentry-*.png
+CODEX_HANDOFF.md
+GEMINI_HANDOFF.md

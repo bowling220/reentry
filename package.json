@@ -1,0 +1,24 @@
+{
+  "name": "reentry-simulator",
+  "private": true,
+  "version": "0.1.0",
+  "description": "REENTRY — Phase 1: Real-Scale Planetary Engine & Rocket Flight Simulator",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test": "node scripts/test-simulation.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "^0.14.0",
+    "monaco-editor": "^0.58.0",
+    "quickjs-emscripten": "^0.32.0",
+    "three": "^0.175.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.175.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.2.0"
+  }
+}
