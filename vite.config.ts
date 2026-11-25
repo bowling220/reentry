@@ -1,14 +1,17 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  // Relative URLs allow the same build to run at / or a GitHub Pages repository path.
+  // Keep repository-relative URLs for GitHub Pages hosting.
   base: './',
   server: {
     port: 5173,
     open: false,
   },
+  worker: {
+    format: 'es',
+  },
   optimizeDeps: {
-    exclude: ['@dimforge/rapier3d-compat'],
+    exclude: ['@dimforge/rapier3d-compat', 'quickjs-emscripten'],
   },
   build: {
     target: 'esnext',

@@ -22,6 +22,7 @@ import { LoadedAssets } from '../assets/assetManager';
 import { VisualAssemblyFlags } from '../config/vehicleConfig';
 import { SpacecraftEntity } from '../simulation/spacecraftManager';
 import { Vec3d, lenVec3, normVec3, subVec3 } from '../math/vec3d';
+import { buildSaturnAssembly } from './saturnAssembly';
 
 interface LegPivot {
   pivot: THREE.Group;
@@ -147,7 +148,7 @@ export class RocketVisual {
   }
 
   public rebuildAssemblyIfNeeded(craft: SpacecraftEntity): void {
-    const key = this.flagsKey(craft.visuals);
+    const key = this.flagsKey(craft.visuals) + (craft.saturn ? `saturn:${craft.saturn.stageIndex}:${craft.saturn.detached}` : '');
     if (key === this.currentFlagsKey) return;
     this.currentFlagsKey = key;
 
@@ -165,6 +166,11 @@ export class RocketVisual {
     const stackGroup = new THREE.Group();
     stackGroup.position.set(0, -comOffset, 0);
     this.assemblyRoot.add(stackGroup);
+
+    if (craft.saturn) {
+      stackGroup.add(buildSaturnAssembly(this.assets.saturnModel, craft.saturn));
+      return;
+    }
 
     const scaleS1 = 1.028; // Matches 68.1m raw stack -> 70.0m full vehicle consistently across stages
 

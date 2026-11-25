@@ -1,5 +1,12 @@
 # External Assets & Licensing Attribution
 
+## Saturn V
+- **Asset**: `models/saturn-v-nasa.glb`
+- **Credit**: NASA / Michael D. Carbajal.
+- **Source**: https://science.nasa.gov/3d-resources/saturn-v/
+- **Usage guidance**: https://www.nasa.gov/nasa-brand-center/images-and-media/
+- The NASA mesh is normalized to 111 m and sliced into stage assemblies in the game. Newly exposed upper-stage engine bells are procedural additions. NASA does not endorse this game.
+
 ## 1. Falcon 9 & Payload 3D Models
 - **Assets**: `falcon9-stage1.glb`, `falcon9-stage2.glb`, `falcon9-upper.glb`, `starlink-v1.glb`
 - **Source**: Space Radar (`https://models.spaceradar.ai/falcon9-stage1/` & `https://github.com/Sara-Managed-Projects/space-radar`)

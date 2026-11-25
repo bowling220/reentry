@@ -8,8 +8,107 @@ import { LocalPhysicsWorld } from '../src/simulation/localPhysics';
 import { PlanetSimulation } from '../src/simulation/planetSimulation';
 import { SimulationClock } from '../src/simulation/simulationLoop';
 import { InputManager } from '../src/input/inputManager';
+import { SpacecraftManager } from '../src/simulation/spacecraftManager';
+import { SATURN_STAGES } from '../src/config/launchVehicles';
+import { addScaledVec3, distVec3, rotateVecByQuat } from '../src/math/vec3d';
+import { loadFlightScenario } from '../src/simulation/scenarios';
+import { BufferGeometry, Float32BufferAttribute } from 'three/webgpu';
+import { sliceStageGeometry } from '../src/rendering/saturnAssembly';
 
 await LocalPhysicsWorld.initRapier();
+
+test('both launch vehicles lift off, and reset retains the selected vehicle', () => {
+  for (const vehicle of ['falcon9', 'saturn-v'] as const) {
+    const manager = new SpacecraftManager();
+    const planet = new PlanetSimulation();
+    manager.reset(vehicle);
+    const dyn = manager.activeDynamics;
+    dyn.triggerLaunchOrIgnition();
+    for (let i = 0; i < 60 * 30; i++) {
+      planet.step(1 / 60);
+      manager.stepAll(1 / 60, neutral, planet);
+    }
+    assert.ok(dyn.getAltitudeAGL() > 100, `${vehicle}: ${dyn.getAltitudeAGL()} m`);
+    assert.notEqual(dyn.status, 'CRASHED');
+    assert.ok(dyn.propellantKg < dyn.config.propellantMassKg);
+    assert.equal(dyn.hasLandingGear, vehicle === 'falcon9');
+    manager.reset();
+    assert.equal(manager.launchVehicleId, vehicle);
+    assert.equal(manager.activeDynamics.status, 'PRELAUNCH');
+    assert.equal(manager.spacecraft.length, 1);
+  }
+});
+
+test('Saturn V stages preserve hardware position, mass, fuel and separation momentum', () => {
+  const manager = new SpacecraftManager();
+  manager.reset('saturn-v');
+  const dyn = manager.activeDynamics;
+  const frame = buildTangentFrame(28.562, -80.577, 70_000);
+  dyn.initializeAirborneState(frame.originECEF, localVectorToECEF({ x: 500, y: 1500, z: 0 }, frame),
+    frame.localToECEF, { x: 0, y: 0, z: 0 }, 25_000, 150, true);
+  for (let stage = 0; stage < 2; stage++) {
+    const massBefore = dyn.totalMassKg;
+    const fuelBefore = dyn.propellantKg;
+    const baseBefore = dyn.getBasePositionECEF();
+    const velBefore = { ...dyn.velECEF };
+    const nose = rotateVecByQuat({ x: 0, y: 1, z: 0 }, dyn.quatECEF);
+    manager.stagingCooldownS = 0;
+    assert.equal(manager.triggerStage(), true);
+    const spent = manager.spacecraft.at(-1)!;
+    assert.equal(spent.dynamics.propellantKg, fuelBefore);
+    assert.equal(dyn.propellantKg, SATURN_STAGES[stage + 1].fuelKg);
+    assert.equal(dyn.engineIgnited, false);
+    assert.ok(Math.abs(dyn.totalMassKg + spent.dynamics.totalMassKg - massBefore) < 0.001);
+    const expectedBase = addScaledVec3(baseBefore, nose, SATURN_STAGES[stage + 1].baseM - SATURN_STAGES[stage].baseM);
+    assert.ok(distVec3(expectedBase, dyn.getBasePositionECEF()) < 0.0001);
+    for (const axis of ['x', 'y', 'z'] as const) {
+      const momentum = dyn.velECEF[axis] * dyn.totalMassKg + spent.dynamics.velECEF[axis] * spent.dynamics.totalMassKg;
+      assert.ok(Math.abs(momentum - velBefore[axis] * massBefore) < 0.01);
+    }
+    assert.equal(manager.getNextStageAction(spent).available, false);
+    assert.equal(manager.triggerStage(), false, 'cooldown blocks repeated separation');
+  }
+  assert.equal(manager.spacecraft.length, 3);
+  manager.stagingCooldownS = 0;
+  assert.equal(manager.triggerStage(), false);
+  assert.deepEqual(manager.getStageSummaries().map(s => s.label), ['S-IVB']);
+  loadFlightScenario('initial_ascent', manager, new PlanetSimulation(), 'saturn-v');
+  assert.equal(manager.launchVehicleId, 'falcon9', 'engineering scenarios retain their Falcon 9 fixtures');
+});
+
+test('stage mesh slicing cuts crossing triangles and interpolates texture coordinates', () => {
+  const source = new BufferGeometry();
+  source.setAttribute('position', new Float32BufferAttribute([0, 0, 0, 1, 2, 0, -1, 2, 0], 3));
+  source.setAttribute('uv', new Float32BufferAttribute([0.5, 0, 1, 1, 0, 1], 2));
+  const clipped = sliceStageGeometry(source, 1, 1.5);
+  const positions = clipped.getAttribute('position'), uv = clipped.getAttribute('uv');
+  assert.ok(positions.count >= 6);
+  for (let i = 0; i < positions.count; i++) {
+    assert.ok(positions.getY(i) >= 1 && positions.getY(i) <= 1.5);
+    assert.ok(Math.abs(uv.getY(i) - positions.getY(i) / 2) < 0.00001);
+  }
+});
+
+test('Saturn V can climb beyond the Karman line with normal engine and staging controls', () => {
+  const manager = new SpacecraftManager();
+  const planet = new PlanetSimulation();
+  manager.reset('saturn-v');
+  const dyn = manager.activeDynamics;
+  dyn.triggerLaunchOrIgnition();
+  for (let i = 0; i < 60 * 650 && dyn.getAltitudeASL() < 100_100; i++) {
+    if (dyn.fuelFraction < 0.01 && manager.getNextStageAction().available) {
+      manager.triggerStage();
+      dyn.triggerLaunchOrIgnition();
+      dyn.throttle = 1;
+    }
+    planet.step(1 / 60);
+    manager.stepAll(1 / 60, neutral, planet);
+    assert.notEqual(dyn.status, 'CRASHED');
+    assert.ok(Number.isFinite(dyn.posECEF.x));
+  }
+  assert.ok(dyn.getAltitudeASL() > 100_000, `reached ${dyn.getAltitudeASL()} m`);
+  assert.ok(manager.spacecraft.length >= 2, 'used actual staging to reach space');
+});
 const neutral: FlightControlInput = { pitch: 0, yaw: 0, roll: 0, throttleDelta: 0,
   setThrottle: null, ignitePressed: false, toggleGearPressed: false, toggleSasPressed: false };
 

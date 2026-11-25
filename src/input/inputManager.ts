@@ -11,6 +11,8 @@ export interface AppActionEvents {
   stagePressed: boolean;
   cycleCraft: -1 | 0 | 1;
   warpStep: -1 | 0 | 1;
+  toggleWorkspace: boolean;
+  manualOverride: boolean;
 }
 
 /**
@@ -38,6 +40,8 @@ export class InputManager {
   private stageQueued = false;
   private cycleCraftQueued: -1 | 0 | 1 = 0;
   private warpStepQueued: -1 | 0 | 1 = 0;
+  private toggleWorkspaceQueued = false;
+  private manualOverrideQueued = false;
 
   constructor() {
     window.addEventListener('keydown', this.handleKeyDown);
@@ -46,10 +50,29 @@ export class InputManager {
   }
 
   private handleKeyDown = (e: KeyboardEvent): void => {
-    const tag = (e.target as HTMLElement | null)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
     const code = e.code;
+
+    // Immediate Manual Override (Escape) ALWAYS works — even when typing in Monaco or inputs!
+    if (code === 'Escape') {
+      if (!this.keysDown.has('Escape')) {
+        this.keysDown.add('Escape');
+        this.manualOverrideQueued = true;
+      }
+      return;
+    }
+
+    const target = e.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (
+      tag === 'INPUT' ||
+      tag === 'TEXTAREA' ||
+      tag === 'SELECT' ||
+      target?.isContentEditable ||
+      target?.closest?.('.monaco-editor')
+    ) {
+      return;
+    }
+
     if (e.metaKey || e.altKey || (e.ctrlKey && code !== 'ControlLeft' && code !== 'ControlRight')) {
       return;
     }
@@ -87,6 +110,9 @@ export class InputManager {
         break;
       case 'KeyM':
         this.toggleMapQueued = true;
+        break;
+      case 'KeyF':
+        this.toggleWorkspaceQueued = true;
         break;
       case 'KeyU':
       case 'F2':
@@ -161,6 +187,8 @@ export class InputManager {
     this.stageQueued = false;
     this.cycleCraftQueued = 0;
     this.warpStepQueued = 0;
+    this.toggleWorkspaceQueued = false;
+    this.manualOverrideQueued = false;
   }
 
   public consumeMechanismToggles(): { gear: boolean; sas: boolean; cycleSasMode: boolean } {
@@ -217,6 +245,8 @@ export class InputManager {
       stagePressed: this.stageQueued,
       cycleCraft: this.cycleCraftQueued,
       warpStep: this.warpStepQueued,
+      toggleWorkspace: this.toggleWorkspaceQueued,
+      manualOverride: this.manualOverrideQueued,
     };
 
     this.cycleCameraQueued = false;
@@ -229,6 +259,8 @@ export class InputManager {
     this.stageQueued = false;
     this.cycleCraftQueued = 0;
     this.warpStepQueued = 0;
+    this.toggleWorkspaceQueued = false;
+    this.manualOverrideQueued = false;
 
     return actions;
   }

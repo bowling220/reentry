@@ -1,25 +1,36 @@
 import { CAMERA_MODE_LIST, CameraMode } from '../camera/cameraController';
+import { ControlAuthority } from '../flightComputer/apiTypes';
 import { TIME_WARP_LEVELS } from '../simulation/simulationLoop';
 import { FlightEventNotice, SpacecraftManager } from '../simulation/spacecraftManager';
 import { TelemetrySnapshot } from '../simulation/telemetry';
 import { RendererBackendName } from '../rendering/rendererManager';
 import { NavballRenderer } from './navball';
+import { LAUNCH_VEHICLES, LaunchVehicleId } from '../config/launchVehicles';
 
 export interface HudCallbacks {
   onLaunch: () => void;
   onStage: () => void;
   onTogglePause: () => void;
   onReset: () => void;
+  onSelectLaunchVehicle: (id: LaunchVehicleId) => void;
   onSelectCamera: (mode: CameraMode) => void;
   onSelectTimeWarp: (scale: number) => void;
   onToggleSasMode: () => void;
   onToggleGear: () => void;
   onToggleMap: () => void;
+  onToggleWorkspace: () => void;
+  onManualOverride: () => void;
   onSelectSpacecraft: (id: string) => void;
   onToggleMute: () => void;
   onVolumeChange: (vol: number) => void;
   onToggleSpaceAudio: () => void;
   onUiInteract?: () => void;
+}
+
+export interface HudFlightComputerState {
+  authority: ControlAuthority;
+  workspaceOpen: boolean;
+  scenarioBadge: string | null;
 }
 
 /**
@@ -74,6 +85,7 @@ export class FlightHud {
           <div class="hud-brand">
             <span class="brand-mark">REENTRY</span>
             <span class="brand-sub" id="val-craft-name">REENTRY-9 STACK</span>
+            <span class="scenario-badge hidden" id="val-scenario-badge">SANDBOX</span>
           </div>
 
           <div class="hud-mission-center">
@@ -81,6 +93,10 @@ export class FlightHud {
               <span class="status-dot" id="val-status-dot"></span>
               <span id="val-status">PRELAUNCH</span>
             </div>
+            <div class="auth-pill" id="val-auth-pill" data-auth="assisted" title="Active Control Authority">
+              <span id="val-auth">ASSISTED</span>
+            </div>
+            <button class="hud-btn override-pill hidden" id="btn-override" title="Immediate Manual Override (Esc)">OVERRIDE [ESC]</button>
             <div class="met-readout">
               <span class="lbl">MET</span>
               <span class="mono-val" id="val-met">T+00:00.0</span>
@@ -89,7 +105,8 @@ export class FlightHud {
               <span class="lbl">SIM</span>
               <span class="mono-val" id="val-warp-effective">1x</span>
             </div>
-            <button class="hud-btn map-toggle-btn" id="btn-map" title="Toggle 3D Orbital Map (M)">ORBITAL MAP [M]</button>
+            <button class="hud-btn map-toggle-btn" id="btn-map" title="Toggle 3D Orbital Map (M)">MAP [M]</button>
+            <button class="hud-btn fc-toggle-btn" id="btn-fc" title="Toggle Flight Computer IDE (F)">FLIGHT COMP [F]</button>
           </div>
 
           <div class="hud-sys-right">
@@ -297,6 +314,8 @@ export class FlightHud {
             </div>
             <div class="keys-list">
               <div><kbd>SPACE</kbd> Ignite / Launch</div>
+              <div><kbd>F</kbd> Flight Computer IDE</div>
+              <div><kbd>ESC</kbd> Immediate Manual Override</div>
               <div><kbd>B</kbd> Stage Separation / Deploy</div>
               <div><kbd>M</kbd> 3D Orbital Map</div>
               <div><kbd>[</kbd> <kbd>]</kbd> Switch Spacecraft</div>
@@ -318,6 +337,12 @@ export class FlightHud {
           </div>
 
           <div class="control-deck">
+            <div class="deck-row">
+              <label class="deck-lbl" for="launch-vehicle">ROCKET</label>
+              <select id="launch-vehicle" class="launch-vehicle" aria-label="Launch vehicle" title="Reset flight to choose another rocket">
+                ${LAUNCH_VEHICLES.map(v => `<option value="${v.id}">${v.name}</option>`).join('')}
+              </select>
+            </div>
             <div class="deck-row">
               <button class="hud-btn primary" id="btn-launch">IGNITE / LAUNCH</button>
               <button class="hud-btn" id="btn-pause">PAUSE</button>
@@ -350,12 +375,17 @@ export class FlightHud {
       btnShowHud: q('btn-show-hud'),
       btnHideHud: q('btn-hide-hud'),
       craftName: q('val-craft-name'),
+      scenarioBadge: q('val-scenario-badge'),
       statusPill: q('val-status-pill'),
       statusDot: q('val-status-dot'),
       status: q('val-status'),
+      authPill: q('val-auth-pill'),
+      authVal: q('val-auth'),
+      btnOverride: q('btn-override'),
       met: q('val-met'),
       warpEff: q('val-warp-effective'),
       btnMap: q('btn-map'),
+      btnFc: q('btn-fc'),
       mapLegend: q('map-legend'),
       toastStack: q('toast-stack'),
       btnMute: q('btn-mute'),
@@ -417,6 +447,11 @@ export class FlightHud {
   }
 
   private bindEvents(): void {
+    this.root.querySelector<HTMLSelectElement>('#launch-vehicle')!.addEventListener('change', (event) => {
+      const id = (event.target as HTMLSelectElement).value;
+      if (id === 'falcon9' || id === 'saturn-v') this.callbacks.onSelectLaunchVehicle(id);
+      (event.target as HTMLSelectElement).blur();
+    });
     const click = (fn: () => void) => () => {
       this.callbacks.onUiInteract?.();
       fn();
@@ -429,6 +464,8 @@ export class FlightHud {
     this.els.btnSas.addEventListener('click', click(() => this.callbacks.onToggleSasMode()));
     this.els.btnGear.addEventListener('click', click(() => this.callbacks.onToggleGear()));
     this.els.btnMap.addEventListener('click', click(() => this.callbacks.onToggleMap()));
+    this.els.btnFc.addEventListener('click', click(() => this.callbacks.onToggleWorkspace()));
+    this.els.btnOverride.addEventListener('click', click(() => this.callbacks.onManualOverride()));
     this.els.btnHelp.addEventListener('click', click(() => this.toggleHelp()));
     this.els.btnCloseKeys.addEventListener('click', click(() => this.toggleHelp()));
     this.els.btnHideHud.addEventListener('click', click(() => this.toggleCinematicHud()));
@@ -503,12 +540,30 @@ export class FlightHud {
     paused: boolean,
     requestedWarp: number,
     effectiveWarp: number,
-    warpCapReason: string | null
+    warpCapReason: string | null,
+    fcState?: HudFlightComputerState
   ): void {
     this.navball.render(t);
 
     const activeCraft = manager.activeSpacecraft;
+    const vehicleSelect = this.root.querySelector<HTMLSelectElement>('#launch-vehicle')!;
+    vehicleSelect.value = manager.launchVehicleId;
+    vehicleSelect.disabled = activeCraft.dynamics.status !== 'PRELAUNCH';
     this.els.craftName.textContent = activeCraft.name.toUpperCase();
+
+    if (fcState) {
+      this.els.authVal.textContent = fcState.authority;
+      this.els.authPill.dataset.auth = fcState.authority.toLowerCase();
+      const showOverride = fcState.authority === 'PROGRAM' || fcState.authority === 'FAULT';
+      this.els.btnOverride.classList.toggle('hidden', !showOverride);
+      this.els.btnFc.classList.toggle('active', fcState.workspaceOpen);
+      if (fcState.scenarioBadge) {
+        this.els.scenarioBadge.textContent = fcState.scenarioBadge;
+        this.els.scenarioBadge.classList.remove('hidden');
+      } else {
+        this.els.scenarioBadge.classList.add('hidden');
+      }
+    }
 
     // Status pill
     this.els.status.textContent = paused ? `${t.flightStatus} [PAUSED]` : t.flightStatus;
@@ -527,7 +582,7 @@ export class FlightHud {
 
     // Orbital Map button & legend
     this.els.btnMap.classList.toggle('active', inMapView);
-    this.els.btnMap.textContent = inMapView ? 'EXIT MAP [M]' : 'ORBITAL MAP [M]';
+    this.els.btnMap.textContent = inMapView ? 'EXIT MAP [M]' : 'MAP [M]';
     this.els.mapLegend.classList.toggle('hidden', !inMapView);
 
     // Flight telemetry numbers

@@ -123,7 +123,7 @@ export class VirtualFlightComputer {
    */
   public applyManualOverride(simTime: number, sasEnabled: boolean): void {
     this.authority = sasEnabled ? 'ASSISTED' : 'MANUAL';
-    if (this.runState === 'RUNNING') {
+    if (this.runState === 'RUNNING' || this.runState === 'PAUSED' || this.runState === 'FAULT') {
       this.runState = 'STOPPED';
     }
     this.activeCommand = createNeutralCommand();

@@ -1,4 +1,5 @@
 import { PLANET_CONFIG } from '../config/planetConfig';
+import { LaunchVehicleId, SaturnAssembly, SATURN_STAGES, saturnConfig, saturnVisualFlags } from '../config/launchVehicles';
 import {
   DEMO_PAYLOAD_SPEC,
   FAIRING_HALF_SPEC,
@@ -39,6 +40,7 @@ export interface StageFuelSummary {
 }
 
 export interface SpacecraftEntity {
+  saturn?: SaturnAssembly;
   id: string;
   name: string;
   role: SpacecraftRole;
@@ -65,6 +67,7 @@ export interface SpacecraftEntity {
  * simultaneously under the shared planetary clock and double-precision ECEF coordinates.
  */
 export class SpacecraftManager {
+  public launchVehicleId: LaunchVehicleId = 'falcon9';
   public spacecraft: SpacecraftEntity[] = [];
   public activeId = 'reentry-9-main';
   public stagingCooldownS = 0;
@@ -87,13 +90,28 @@ export class SpacecraftManager {
     return this.activeSpacecraft.dynamics;
   }
 
-  public reset(): void {
+  public reset(vehicleId: LaunchVehicleId = this.launchVehicleId): void {
+    this.launchVehicleId = vehicleId;
     this.spacecraft = [];
     this.nextIdCounter = 1;
     this.stagingCooldownS = 0;
     this.historySampleTimer = 0;
     this.eventQueue = [];
     this.orbitAnnouncedIds.clear();
+
+    if (vehicleId === 'saturn-v') {
+      const dynamics = new RocketFlightDynamics(saturnConfig(0), false);
+      const craft: SpacecraftEntity = {
+        id: 'saturn-v-main', name: 'Saturn V / Apollo', role: 'stack',
+        saturn: { stageIndex: 0, detached: false }, visuals: saturnVisualFlags(0),
+        dynamics, historyECEF: [{ ...dynamics.posECEF }],
+        storedUpperPropellantKg: 0, storedPayloadPropellantKg: 0,
+        separationFxTimer: 0, separationFxLocalY: 0, controllable: true,
+      };
+      this.spacecraft.push(craft);
+      this.activeId = craft.id;
+      return;
+    }
 
     const s2TotalMass =
       STAGE2_UPPER_SPEC.config.dryMassKg + STAGE2_UPPER_SPEC.config.propellantMassKg;
@@ -134,6 +152,49 @@ export class SpacecraftManager {
 
     this.spacecraft.push(mainCraft);
     this.activeId = mainCraft.id;
+  }
+
+  private separateSaturnStage(craft: SpacecraftEntity): boolean {
+    const index = craft.saturn!.stageIndex;
+    const dyn = craft.dynamics;
+    const nose = rotateVecByQuat({ x: 0, y: 1, z: 0 }, dyn.quatECEF);
+    const base = dyn.getBasePositionECEF();
+    const velocity = { ...dyn.velECEF };
+    const spentConfig = saturnConfig(index, true);
+    const spent = new RocketFlightDynamics(spentConfig, false);
+    spent.initializeAirborneState(
+      addScaledVec3(base, nose, spentConfig.comHeightFullM), velocity,
+      dyn.quatECEF, dyn.angVelBody, dyn.propellantKg, dyn.missionElapsedTimeS, true
+    );
+    const nextConfig = saturnConfig(index + 1);
+    const offset = SATURN_STAGES[index + 1].baseM - SATURN_STAGES[index].baseM;
+    const shift = offset + nextConfig.comHeightFullM - dyn.comHeightFromBase;
+    dyn.reconfigureStage(nextConfig, nextConfig.propellantMassKg, shift, false, true);
+
+    // Equal and opposite separation impulses conserve linear momentum, even if
+    // the pilot stages early with a substantial amount of propellant remaining.
+    const spentMass = spent.totalMassKg;
+    const upperMass = dyn.totalMassKg;
+    spent.velECEF = addScaledVec3(velocity, nose, -2 * upperMass / (spentMass + upperMass));
+    dyn.velECEF = addScaledVec3(velocity, nose, 2 * spentMass / (spentMass + upperMass));
+    this.spacecraft.push({
+      id: `saturn-spent-${this.nextIdCounter++}`, name: spentConfig.name, role: 'booster',
+      saturn: { stageIndex: index, detached: true }, visuals: saturnVisualFlags(index, true),
+      dynamics: spent, historyECEF: [{ ...spent.posECEF }],
+      storedUpperPropellantKg: 0, storedPayloadPropellantKg: 0,
+      separationFxTimer: 1.8, separationFxLocalY: spentConfig.heightM - spent.comHeightFromBase,
+      controllable: true,
+    });
+    craft.saturn = { stageIndex: index + 1, detached: false };
+    craft.name = nextConfig.name;
+    craft.role = 'upper_stage';
+    craft.visuals = saturnVisualFlags(index + 1);
+    craft.separationFxTimer = 1.8;
+    craft.separationFxLocalY = -dyn.comHeightFromBase;
+    this.stagingCooldownS = 1.25;
+    this.pushEvent(`${SATURN_STAGES[index].name} SEPARATED`,
+      `Press SPACE or Z to ignite ${SATURN_STAGES[index + 1].name}. Spent stage remains in the tracker.`, 'success');
+    return true;
   }
 
   public selectSpacecraft(id: string): boolean {
@@ -184,7 +245,7 @@ export class SpacecraftManager {
       return { available: false, label: 'NO STAGE', blockedReason: 'Vehicle destroyed' };
     }
     if (craft.dynamics.status === 'PRELAUNCH') {
-      return { available: false, label: 'STAGE 1 SEP', blockedReason: 'Liftoff required first' };
+      return { available: false, label: craft.saturn ? 'SEPARATE S-IC' : 'STAGE 1 SEP', blockedReason: 'Liftoff required first' };
     }
     if (this.stagingCooldownS > 0.01) {
       return {
@@ -194,6 +255,12 @@ export class SpacecraftManager {
       };
     }
 
+    if (craft.saturn) {
+      const { stageIndex, detached } = craft.saturn;
+      return !detached && stageIndex < 2
+        ? { available: true, label: `SEPARATE ${SATURN_STAGES[stageIndex].name}`, blockedReason: null }
+        : { available: false, label: detached ? 'SPENT STAGE' : 'ALL STAGED', blockedReason: null };
+    }
     if (craft.visuals.hasStage1 && craft.visuals.hasStage2) {
       return { available: true, label: 'MECO + SEP STAGE 1', blockedReason: null };
     }
@@ -211,6 +278,13 @@ export class SpacecraftManager {
    * Stage propellant summary for HUD stage indicators.
    */
   public getStageSummaries(craft: SpacecraftEntity = this.activeSpacecraft): StageFuelSummary[] {
+    if (craft.saturn) {
+      const { stageIndex, detached } = craft.saturn;
+      return SATURN_STAGES.slice(stageIndex, detached ? stageIndex + 1 : undefined).map((s, i) => ({
+        label: s.name, percent: i === 0 ? craft.dynamics.fuelFraction * 100 : 100,
+        attached: true, active: i === 0,
+      }));
+    }
     const list: StageFuelSummary[] = [];
     if (craft.visuals.hasStage1) {
       list.push({
@@ -257,6 +331,7 @@ export class SpacecraftManager {
     const craft = this.activeSpacecraft;
     const action = this.getNextStageAction(craft);
     if (!action.available) return false;
+    if (craft.saturn) return this.separateSaturnStage(craft);
 
     const dyn = craft.dynamics;
     const noseECEF = rotateVecByQuat({ x: 0, y: 1, z: 0 }, dyn.quatECEF);
@@ -531,8 +606,15 @@ export class SpacecraftManager {
 
   /**
    * Step ALL simulated spacecraft forward by `dt` seconds.
+   * Optional `resolveInput` allows per-spacecraft virtual flight computers to drive
+   * multiple vehicles simultaneously alongside manual pilot controls.
    */
-  public stepAll(dt: number, activeInput: FlightControlInput, planet: PlanetSimulation): void {
+  public stepAll(
+    dt: number,
+    activeInput: FlightControlInput,
+    planet: PlanetSimulation,
+    resolveInput?: (craft: SpacecraftEntity, isPlayerControlled: boolean) => FlightControlInput
+  ): void {
     if (this.stagingCooldownS > 0) {
       this.stagingCooldownS = Math.max(0, this.stagingCooldownS - dt);
     }
@@ -543,7 +625,11 @@ export class SpacecraftManager {
       }
 
       const isPlayerControlled = craft.id === this.activeId && craft.controllable;
-      const input = isPlayerControlled ? activeInput : NEUTRAL_FLIGHT_INPUT;
+      const input = resolveInput
+        ? resolveInput(craft, isPlayerControlled)
+        : isPlayerControlled
+          ? activeInput
+          : NEUTRAL_FLIGHT_INPUT;
       craft.dynamics.step(dt, input, planet);
 
       // Emit flight notifications for notable touchdown / impact events

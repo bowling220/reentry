@@ -6,5 +6,6 @@ dist/
 !.env.example
 *.log
 reentry-*.png
+reentry-*.jpg
 CODEX_HANDOFF.md
 GEMINI_HANDOFF.md

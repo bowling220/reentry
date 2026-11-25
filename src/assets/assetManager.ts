@@ -8,6 +8,7 @@ export interface LoadedAssets {
   stage1Model: THREE.Group | null;
   upperStageModel: THREE.Group | null;
   payloadModel: THREE.Group | null;
+  saturnModel: THREE.Group | null;
   earthDayMap: THREE.Texture | null;
   earthNightMap: THREE.Texture | null;
   earthCloudsMap: THREE.Texture | null;
@@ -32,12 +33,13 @@ export class AssetManager {
   }
 
   public async loadAll(onProgress?: (label: string) => void): Promise<LoadedAssets> {
-    onProgress?.('Loading Falcon 9 stages, payload, USGS imagery & 8K Earth maps…');
+    onProgress?.('Loading Falcon 9, Saturn V, payload, USGS imagery & 8K Earth maps…');
 
     const [
       stage1Model,
       upperStageModel,
       payloadModel,
+      saturnModel,
       earthDayMap,
       earthNightMap,
       earthCloudsMap,
@@ -48,6 +50,7 @@ export class AssetManager {
       this.loadGlb(assetUrl('models/falcon9-stage1.glb')),
       this.loadGlb(assetUrl('models/falcon9-upper.glb')),
       this.loadGlb(assetUrl('models/starlink-v1.glb')),
+      this.loadGlb(assetUrl('models/saturn-v-nasa.glb')),
       this.loadTexture(assetUrl('textures/earth_daymap.jpg'), true, true),
       this.loadTexture(assetUrl('textures/earth_nightmap.jpg'), true, true),
       this.loadTexture(assetUrl('textures/earth_clouds.jpg'), false, true),
@@ -60,6 +63,7 @@ export class AssetManager {
       stage1Model,
       upperStageModel,
       payloadModel,
+      saturnModel,
       earthDayMap,
       earthNightMap,
       earthCloudsMap,

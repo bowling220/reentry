@@ -2,19 +2,27 @@ import './style.css';
 import { AssetManager } from './assets/assetManager';
 import { AerospaceAudioEngine } from './audio/audioEngine';
 import { CAMERA_MODE_LIST, CameraController } from './camera/cameraController';
+import { LaunchVehicleId } from './config/launchVehicles';
+import { FlightComputerManager } from './flightComputer/flightComputerManager';
+import { FlightDataRecorder } from './flightComputer/flightRecorder';
+import { ProgramLibrary } from './flightComputer/programLibrary';
 import { InputManager } from './input/inputManager';
 import { RendererManager } from './rendering/rendererManager';
 import { SceneController } from './rendering/sceneController';
+import { NEUTRAL_FLIGHT_INPUT } from './simulation/flightDynamics';
 import { LocalPhysicsWorld } from './simulation/localPhysics';
 import { PlanetSimulation } from './simulation/planetSimulation';
+import { FLIGHT_SCENARIOS, ScenarioId, loadFlightScenario } from './simulation/scenarios';
 import { SimulationClock, TIME_WARP_LEVELS } from './simulation/simulationLoop';
 import { SpacecraftManager } from './simulation/spacecraftManager';
 import { computeTelemetry } from './simulation/telemetry';
+import { EngineeringWorkspace, WorkspaceMode } from './ui/engineeringWorkspace';
 import { FlightHud } from './ui/hud';
 
 async function bootstrap(): Promise<void> {
   const viewportEl = document.getElementById('viewport')!;
   const hudRootEl = document.getElementById('hud-root')!;
+  const workspaceRootEl = document.getElementById('workspace-root')!;
 
   const initBanner = document.createElement('div');
   initBanner.style.cssText =
@@ -24,6 +32,7 @@ async function bootstrap(): Promise<void> {
 
   const rendererManager = new RendererManager(viewportEl);
   const assetManager = new AssetManager();
+  const programLibrary = new ProgramLibrary();
 
   const [, , assets] = await Promise.all([
     LocalPhysicsWorld.initRapier(),
@@ -31,6 +40,7 @@ async function bootstrap(): Promise<void> {
     assetManager.loadAll((msg) => {
       initBanner.textContent = msg.toUpperCase();
     }),
+    programLibrary.init(),
   ]);
 
   const planet = new PlanetSimulation();
@@ -41,30 +51,138 @@ async function bootstrap(): Promise<void> {
   const audio = new AerospaceAudioEngine();
   audio.bindUnlock();
 
+  const fcManager = new FlightComputerManager();
+  fcManager.syncSpacecraft(spacecraftManager);
+  const recorder = new FlightDataRecorder();
+
+  let currentScenario = FLIGHT_SCENARIOS[0];
+  let selectedLaunchVehicle: LaunchVehicleId = 'falcon9';
+  let workspace!: EngineeringWorkspace;
+
   const selectSpacecraftById = (id: string) => {
     if (spacecraftManager.selectSpacecraft(id)) {
       cameraController.adaptDistanceForCraft(spacecraftManager.activeDynamics);
+      workspace?.syncActiveSpacecraft(id);
     }
   };
 
   const sceneController = new SceneController(assets, hudRootEl, selectSpacecraftById);
 
-  const resetAll = () => {
+  const loadScenario = (scenarioId: ScenarioId, keepInstalledProgram: boolean) => {
+    const prevCraft = spacecraftManager.activeSpacecraft;
+    const prevFc = prevCraft ? fcManager.getComputer(prevCraft.id) : null;
+    const savedProg =
+      keepInstalledProgram && prevFc?.programId && prevFc.sourceCode
+        ? {
+            programId: prevFc.programId,
+            programName: prevFc.programName,
+            language: prevFc.language,
+            code: prevFc.sourceCode,
+          }
+        : null;
+
     input.clear();
-    planet.reset();
-    spacecraftManager.reset();
+    fcManager.reset();
     clock.reset();
+    recorder.reset();
+
+    if (scenarioId !== 'prelaunch') selectedLaunchVehicle = 'falcon9';
+    currentScenario = loadFlightScenario(scenarioId, spacecraftManager, planet, selectedLaunchVehicle);
     sceneController.reset();
     cameraController.resetView();
+    cameraController.adaptDistanceForCraft(spacecraftManager.activeDynamics);
+
+    fcManager.syncSpacecraft(spacecraftManager);
+    if (savedProg) {
+      fcManager.installProgram(
+        spacecraftManager.activeId,
+        savedProg.programId,
+        savedProg.programName,
+        savedProg.language,
+        savedProg.code
+      );
+    }
+
+    workspace?.setScenarioMeta(scenarioId, currentScenario.isSandbox);
+    workspace?.syncActiveSpacecraft(spacecraftManager.activeId);
+
+    spacecraftManager.pushEvent(
+      currentScenario.isSandbox ? 'SANDBOX SCENARIO LOADED' : 'FLIGHT RESET',
+      currentScenario.name,
+      'info'
+    );
+  };
+
+  const resetAll = () => {
+    loadScenario(currentScenario.id, true);
   };
 
   const triggerManualStage = () => {
     if (clock.paused) clock.togglePause();
+    const craftBefore = spacecraftManager.activeSpacecraft;
+    const actionBefore = spacecraftManager.getNextStageAction(craftBefore);
     if (spacecraftManager.triggerStage()) {
       audio.playStageSeparation();
       cameraController.adaptDistanceForCraft(spacecraftManager.activeDynamics);
+      fcManager.syncSpacecraft(spacecraftManager);
+      workspace?.syncActiveSpacecraft(spacecraftManager.activeId);
+      recorder.recordEvent(
+        craftBefore.id,
+        planet.planetTimeS,
+        craftBefore.dynamics.missionElapsedTimeS,
+        actionBefore.label,
+        'staging'
+      );
+      fcManager.notifyStagingEvent(craftBefore, actionBefore.label, spacecraftManager, planet);
     }
   };
+
+  const triggerImmediateOverride = () => {
+    const activeCraft = spacecraftManager.activeSpacecraft;
+    const fc = fcManager.getComputer(activeCraft.id);
+    const wasAutonomous = fc.authority === 'PROGRAM' || fc.authority === 'FAULT';
+    fcManager.manualOverride(activeCraft, planet.planetTimeS);
+    if (wasAutonomous) {
+      spacecraftManager.pushEvent(
+        'MANUAL OVERRIDE',
+        `Pilot reclaimed control of ${activeCraft.name}.`,
+        'warning'
+      );
+    }
+  };
+
+  fcManager.onStageRequested = (craftId: string) => {
+    if (craftId === spacecraftManager.activeId) {
+      triggerManualStage();
+    }
+  };
+
+  const applyWorkspaceLayout = (mode: WorkspaceMode) => {
+    document.body.classList.toggle('workspace-split', mode === 'SPLIT');
+    document.body.classList.toggle('workspace-full', mode === 'FULL');
+    rendererManager.resize(cameraController.camera);
+  };
+
+  workspace = new EngineeringWorkspace(
+    workspaceRootEl,
+    programLibrary,
+    fcManager,
+    recorder,
+    spacecraftManager,
+    planet,
+    {
+      onModeChange: applyWorkspaceLayout,
+      onSplitResize: () => {
+        rendererManager.resize(cameraController.camera);
+      },
+      onLoadScenario: (id, keepInstalledProgram) => {
+        loadScenario(id, keepInstalledProgram);
+      },
+      onSelectSpacecraft: selectSpacecraftById,
+      onUiClick: () => audio.playUiClick(),
+    }
+  );
+  workspace.setScenarioMeta(currentScenario.id, currentScenario.isSandbox);
 
   const hud = new FlightHud(hudRootEl, {
     onLaunch: () => {
@@ -82,6 +200,10 @@ async function bootstrap(): Promise<void> {
       clock.togglePause();
     },
     onReset: resetAll,
+    onSelectLaunchVehicle: (id) => {
+      selectedLaunchVehicle = id;
+      loadScenario('prelaunch', true);
+    },
     onSelectCamera: (mode) => {
       cameraController.setMode(mode);
     },
@@ -98,6 +220,10 @@ async function bootstrap(): Promise<void> {
     onToggleMap: () => {
       cameraController.toggleMapMode(spacecraftManager.activeDynamics);
     },
+    onToggleWorkspace: () => {
+      workspace.toggleWorkspace();
+    },
+    onManualOverride: triggerImmediateOverride,
     onSelectSpacecraft: selectSpacecraftById,
     onToggleMute: () => {
       const muted = audio.toggleMute();
@@ -127,6 +253,7 @@ async function bootstrap(): Promise<void> {
   let lastFrameTime = performance.now();
   let smoothedFps = 60;
   let renderFailed = false;
+  const lastFaultCount = new Map<string, number>();
 
   const frame = (now: number) => {
     if (renderFailed) return;
@@ -136,8 +263,10 @@ async function bootstrap(): Promise<void> {
     lastFrameTime = now;
     smoothedFps = smoothedFps * 0.92 + (1 / realDt) * 0.08;
 
-    // Process UI/application hotkeys
+    // Process UI/application hotkeys (Manual Override Esc works even while paused or editing!)
     const actions = input.consumeAppActions();
+    if (actions.manualOverride) triggerImmediateOverride();
+    if (actions.toggleWorkspace) workspace.toggleWorkspace();
     if (actions.cycleCamera) cameraController.cycleMode();
     if (actions.selectCameraIndex !== null && CAMERA_MODE_LIST[actions.selectCameraIndex]) {
       cameraController.setMode(CAMERA_MODE_LIST[actions.selectCameraIndex].id);
@@ -151,6 +280,7 @@ async function bootstrap(): Promise<void> {
     if (actions.cycleCraft !== 0) {
       spacecraftManager.cycleSpacecraft(actions.cycleCraft);
       cameraController.adaptDistanceForCraft(spacecraftManager.activeDynamics);
+      workspace.syncActiveSpacecraft(spacecraftManager.activeId);
     }
     if (actions.warpStep !== 0) {
       const idx = TIME_WARP_LEVELS.indexOf(
@@ -163,21 +293,63 @@ async function bootstrap(): Promise<void> {
       clock.setTimeScale(TIME_WARP_LEVELS[nextIdx]);
     }
 
-    // Advance planetary & multi-spacecraft physics using fixed/RK4 steps + safe warp gating
-    const { maxWarp, reason: warpReason } = spacecraftManager.computeMaxSafeWarp();
+    // Combine physical warp safety limit with running Flight Computer warp limits
+    const simWarp = spacecraftManager.computeMaxSafeWarp();
+    const fcWarp = fcManager.computeWarpRestriction();
+    const maxWarp = Math.min(simWarp.maxWarp, fcWarp.maxWarp);
+    const warpReason =
+      fcWarp.maxWarp < simWarp.maxWarp ? fcWarp.reason : simWarp.reason ?? fcWarp.reason;
+
     const stepsExecuted = clock.advance(
       realDt,
       maxWarp,
       (stepDt) => {
         const flightInput = input.consumeFlightInput();
         planet.step(stepDt);
-        spacecraftManager.stepAll(stepDt, flightInput, planet);
+        fcManager.stepSimulationTime(stepDt, spacecraftManager, planet);
 
-        const activeDyn = spacecraftManager.activeDynamics;
-        if (activeDyn.justIgnited) audio.playIgnition();
-        if (activeDyn.justShutdown) audio.playShutdown();
-        if (activeDyn.justLanded) audio.playTouchdown();
-        if (activeDyn.justCrashed) audio.playCrash();
+        spacecraftManager.stepAll(stepDt, flightInput, planet, (craft, isPlayerControlled) => {
+          const manual = isPlayerControlled ? flightInput : NEUTRAL_FLIGHT_INPUT;
+          return fcManager.getProgramControlInput(craft, manual) ?? NEUTRAL_FLIGHT_INPUT;
+        });
+
+        for (const craft of spacecraftManager.spacecraft) {
+          const dyn = craft.dynamics;
+          const isActive = craft.id === spacecraftManager.activeId;
+          if (dyn.justIgnited) {
+            if (isActive) audio.playIgnition();
+            recorder.recordEvent(craft.id, planet.planetTimeS, dyn.missionElapsedTimeS, 'IGNITION', 'ignition');
+          }
+          if (dyn.justShutdown) {
+            if (isActive) audio.playShutdown();
+            recorder.recordEvent(craft.id, planet.planetTimeS, dyn.missionElapsedTimeS, 'SHUTDOWN', 'shutdown');
+          }
+          if (dyn.justLanded) {
+            if (isActive) audio.playTouchdown();
+            recorder.recordEvent(craft.id, planet.planetTimeS, dyn.missionElapsedTimeS, 'TOUCHDOWN', 'touchdown');
+          }
+          if (dyn.justCrashed) {
+            if (isActive) audio.playCrash();
+            recorder.recordEvent(craft.id, planet.planetTimeS, dyn.missionElapsedTimeS, 'IMPACT', 'fault');
+          }
+
+          const fc = fcManager.getComputer(craft.id);
+          const prevFaults = lastFaultCount.get(craft.id) ?? 0;
+          if (fc.faultHistory.length > prevFaults) {
+            lastFaultCount.set(craft.id, fc.faultHistory.length);
+            recorder.recordEvent(craft.id, planet.planetTimeS, dyn.missionElapsedTimeS, 'FC FAULT', 'fault');
+            if (isActive) {
+              spacecraftManager.pushEvent(
+                'FLIGHT COMPUTER FAULT',
+                fc.faultHistory[0]?.message ?? 'Safe fallback engaged.',
+                'danger'
+              );
+            }
+          }
+
+          const snap = computeTelemetry(dyn, planet);
+          recorder.stepRecord(stepDt, planet.planetTimeS, craft, snap, fc);
+        }
       },
       warpReason
     );
@@ -210,20 +382,22 @@ async function bootstrap(): Promise<void> {
     // Update procedural aerospace audio
     audio.update(activeDyn, cameraController.cameraPosECEF, clock.paused, cameraController.mapMode);
 
-    // Render frame with synchronous render failure guard
-    try {
-      rendererManager.render(sceneController.scene, cameraController.camera);
-    } catch (error) {
-      renderFailed = true;
-      clock.paused = true;
-      console.error('[REENTRY] Rendering stopped:', error);
-      const notice = document.createElement('div');
-      notice.setAttribute('role', 'alert');
-      notice.style.cssText =
-        'position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:16px;background:#321c24;color:#fff;font:14px system-ui;z-index:200;';
-      notice.textContent =
-        'Flight paused because the view stopped rendering. Reload to restart.';
-      document.body.appendChild(notice);
+    // Render frame (skip rendering when Full-Screen IDE covers the viewport to save GPU)
+    if (workspace.mode !== 'FULL') {
+      try {
+        rendererManager.render(sceneController.scene, cameraController.camera);
+      } catch (error) {
+        renderFailed = true;
+        clock.paused = true;
+        console.error('[REENTRY] Rendering stopped:', error);
+        const notice = document.createElement('div');
+        notice.setAttribute('role', 'alert');
+        notice.style.cssText =
+          'position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:16px;background:#321c24;color:#fff;font:14px system-ui;z-index:200;';
+        notice.textContent =
+          'Flight paused because the view stopped rendering. Reload to restart.';
+        document.body.appendChild(notice);
+      }
     }
 
     // Compute live flight + orbital telemetry
@@ -237,6 +411,8 @@ async function bootstrap(): Promise<void> {
       hud.pushToast(notice);
     }
 
+    const activeFc = fcManager.getComputer(activeCraft.id);
+
     hud.update(
       telemetry,
       spacecraftManager,
@@ -246,8 +422,15 @@ async function bootstrap(): Promise<void> {
       clock.paused,
       clock.requestedTimeScale,
       clock.effectiveTimeScale,
-      clock.warpCapReason
+      clock.warpCapReason,
+      {
+        authority: activeFc.authority,
+        workspaceOpen: workspace.mode !== 'CLOSED',
+        scenarioBadge: currentScenario.isSandbox ? `SANDBOX` : null,
+      }
     );
+
+    workspace.update(telemetry);
   };
 
   requestAnimationFrame(frame);
