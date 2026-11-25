@@ -27,10 +27,11 @@ import { LANDING_PAD_OFFSET_LOCAL } from '../config/planetConfig';
 import { LoadedAssets } from '../assets/assetManager';
 import { Vec3d } from '../math/vec3d';
 import { getCapeTerrainElevationM } from '../simulation/terrainHeight';
+import { capeImageryAlbedo, capeSurfaceLonLat } from './capeImagery';
 
 /**
- * Fully procedural PBR Cape Canaveral barrier-island terrain + realistic Atlantic Ocean:
- * - Zero flat pasted satellite image decals!
+ * Georeferenced PBR Cape Canaveral near-field terrain and animated Atlantic Ocean.
+ * Regional imagery is shared with the spherical Earth rather than a floating decal.
  * - True shadow-receiving MeshStandardNodeMaterial so the rocket, tower, strongback,
  *   hangars, tanks, and 3D palms cast crisp grounded shadows across the coastal landscape.
  * - Multi-scale organic procedural biomes matching Cape Canaveral's true geography:
@@ -39,7 +40,7 @@ import { getCapeTerrainElevationM } from '../simulation/terrainHeight';
  *   and western Banana River estuary shoreline.
  * - Multi-octave directional Atlantic Ocean with animated shoreline breaking surf,
  *   open-water whitecap foam, emerald coastal shallows, Fresnel sky reflection & sun glint.
- * - Dissolves seamlessly into the real-scale 3D spherical Earth between 18 km and 54 km.
+ * - Near-field geometry blends into the detailed real-scale spherical Earth.
  */
 export class CapeTerrainOcean {
   public readonly group: THREE.Group;
@@ -52,14 +53,14 @@ export class CapeTerrainOcean {
   private readonly uAtmoHazeStrength = uniform(1.0);
   private readonly uRegionalFade = uniform(1.0);
 
-  constructor(_assets: LoadedAssets) {
+  constructor(assets: LoadedAssets) {
     this.group = new THREE.Group();
     this.group.name = 'CapeTerrainAndOcean';
 
     this.oceanMesh = this.buildOceanDisk();
     this.group.add(this.oceanMesh);
 
-    this.terrainMesh = this.buildProceduralTerrainDisk();
+    this.terrainMesh = this.buildProceduralTerrainDisk(assets);
     this.group.add(this.terrainMesh);
   }
 
@@ -151,7 +152,7 @@ export class CapeTerrainOcean {
     return geo;
   }
 
-  private buildProceduralTerrainDisk(): THREE.Mesh {
+  private buildProceduralTerrainDisk(assets: LoadedAssets): THREE.Mesh {
     const maxRadius = 82_000;
     const geo = this.buildCurvedRadialDiskGeometry(maxRadius, 144, 144, true, 0.08);
 
@@ -237,7 +238,12 @@ export class CapeTerrainOcean {
       smoothstep(float(0.45), float(0.85), mesoN).mul(0.45)
     );
 
-    const surfaceAlbedo = mix(naturalLand, industrialGravel, industrialMask).mul(microMod);
+    const proceduralSurface = mix(naturalLand, industrialGravel, industrialMask).mul(microMod);
+    const geographicAlbedo = capeImageryAlbedo(naturalLand, assets, capeSurfaceLonLat(pLocal));
+    // Actual roads, estuaries and launch complexes supply the large-scale color;
+    // gravel and vegetation detail remain on the lit, shadow-receiving near field.
+    const localDetail = float(1).sub(smoothstep(float(120), float(700), camDist)).mul(0.4);
+    const surfaceAlbedo = mix(geographicAlbedo.mul(microMod), proceduralSurface, localDetail);
 
     // Distance-attenuated atmospheric aerial perspective haze
     const hazeFactor = float(1.0)
@@ -256,7 +262,7 @@ export class CapeTerrainOcean {
     const lagoonCenter = float(-2850.0).add(sin(pLocal.z.mul(0.00032)).mul(420.0));
     const distFromLagoon = abs(pLocal.x.sub(lagoonCenter));
     const lagoonCutout = smoothstep(float(820.0), float(1180.0), distFromLagoon);
-    const outerCircleFade = float(1.0).sub(smoothstep(float(48000.0), float(78000.0), radialDist));
+    const outerCircleFade = float(1.0).sub(smoothstep(float(1800.0), float(6500.0), radialDist));
 
     mat.colorNode = finalAlbedo;
     mat.roughnessNode = finalRoughness;
@@ -368,7 +374,7 @@ export class CapeTerrainOcean {
     const finalWater = mix(waterLit, this.uHorizonColor, clamp(hazeFactor, float(0.0), float(0.88)));
 
     const radialDist = length(vec2(pLocal.x, pLocal.z));
-    const outerFade = float(1.0).sub(smoothstep(float(68000.0), float(110000.0), radialDist));
+    const outerFade = float(1.0).sub(smoothstep(float(1800.0), float(6500.0), radialDist));
 
     mat.colorNode = finalWater;
     mat.opacityNode = outerFade.mul(this.uRegionalFade);

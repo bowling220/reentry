@@ -14,6 +14,7 @@
 - **License**: MIT License (permissive; allows commercial and non-commercial use, modification, and redistribution with attribution).
 
 ## 2. Cape Canaveral Real-World Satellite Imagery & Elevation Data
+- **Current terrain albedo**: `cape_albedo_local.png` (2048²), `cape_albedo_mid.png` (4096²), and `cape_albedo_wide.png` (4096², roughly 360 km east–west). USDA / USGS The National Map orthoimagery, exported in EPSG:4326 with transparent missing-data coverage. Exact returned bounds are recorded in `src/config/capeImagery.ts`; regenerate with `node scripts/fetch-cape-imagery.mjs`.
 - **Assets**: `cape_sat_local.png` (4.4 km SLC-40 ortho), `cape_sat_mid.png` (36 km Cape Canaveral & Merritt Island ortho), `cape_sat_wide.png` (180 km Central Florida regional ortho), `cape_dem_mid.png` (3DEP elevation raster)
 - **Source**: U.S. Geological Survey (USGS) — The National Map (`USGSImageryOnly` MapServer & `3DEPElevation` ImageServer, `https://www.usgs.gov/programs/national-geospatial-program/national-map`)
 - **License**: **Public Domain** (U.S. Federal Government work; no copyright restrictions; credit USGS National Geospatial Program).

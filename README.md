@@ -41,4 +41,9 @@ Relative asset URLs support hosting under the `/reentry/` repository path.
 
 ## Asset credits
 
+Florida terrain uses three nested, georeferenced USGS imagery layers on the curved
+Earth, with procedural PBR detail and real shadows near the launchpad. Regional
+detail remains visible through ascent and orbit; the rest of Earth uses the 8K
+global map. Imagery is bundled locally, with no map-service requests during play.
+
 See [external asset attribution](public/assets/ATTRIBUTION.md) for spacecraft models and Earth imagery.

@@ -62,7 +62,7 @@ export class AtmosphereRenderer {
     this.skyDome.renderOrder = -1000;
 
     // 2. Real-scale planetary atmospheric scattering outer shell (R = 6,371 km + 115 km)
-    const limbGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM + 115_000, 144, 96);
+    const limbGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM + 115_000, 384, 256);
     this.atmoLimbMesh = new THREE.Mesh(limbGeo, this.createLimbShellMaterial());
     this.atmoLimbMesh.frustumCulled = false;
     this.atmoLimbMesh.renderOrder = 6;
@@ -262,7 +262,7 @@ export class AtmosphereRenderer {
 
     // Gentle fade right at camera clip distance so flying directly through a cloud feels silky
     const closeSoftFade = smoothstep(float(180.0), float(1100.0), camDist);
-    const farFade = float(1.0).sub(smoothstep(float(36000.0), float(64000.0), camDist));
+    const farFade = float(1.0).sub(smoothstep(float(120000.0), float(240000.0), camDist));
 
     mat.colorNode = finalCloudCol;
     mat.opacityNode = clamp(
@@ -405,7 +405,9 @@ export class AtmosphereRenderer {
     dt = 0
   ): void {
     const skyRadius = Math.max(5000, cameraFar * 0.56);
-    this.skyDome.scale.setScalar(skyRadius);
+    // This background has depth testing disabled; keep it camera-local rather
+    // than expanding its vertices to tens of millions of meters.
+    this.skyDome.scale.setScalar(5000);
     this.skyDome.position.set(0, 0, 0);
 
     const r = Math.hypot(cameraPosECEF.x, cameraPosECEF.y, cameraPosECEF.z) || 1;
@@ -445,7 +447,11 @@ export class AtmosphereRenderer {
 
     // Planetary atmospheric limb halo fades in smoothly above 22 km
     this.atmoLimbMesh.position.set(-cameraPosECEF.x, -cameraPosECEF.y, -cameraPosECEF.z);
-    this.uLimbStrength.value = Math.max(0, Math.min(1, (alt - 22_000) / 48_000));
+    // The camera-centered sky already handles scattering inside the atmosphere.
+    // Looking at the inside of the planet-sized shell produces visible polygon
+    // silhouettes near the camera; use that shell only for the exterior limb.
+    this.atmoLimbMesh.visible = alt > 120_000;
+    this.uLimbStrength.value = Math.max(0, Math.min(1, (alt - 120_000) / 65_000));
 
     // Position 3D coastal cumulus field over Cape Canaveral with gentle trade-wind drift
     this.cloudDriftClock += dt;
@@ -457,10 +463,10 @@ export class AtmosphereRenderer {
       capeRel.z + CAPE_FRAME.east.z * driftEastM
     );
 
-    const cloudAltFade = 1 - Math.max(0, Math.min(1, (alt - 16_000) / 20_000));
+    const cloudAltFade = 1 - Math.max(0, Math.min(1, (alt - 100_000) / 100_000));
     this.uCloudFade.value = cloudAltFade;
     const distFromCape = Math.hypot(capeRel.x, capeRel.y, capeRel.z);
-    this.cloudInstancedMesh.visible = cloudAltFade > 0.01 && distFromCape < 120_000;
+    this.cloudInstancedMesh.visible = cloudAltFade > 0.01 && distFromCape < 250_000;
 
     // Stars stay suppressed against bright daytime skies (<= 35 km) and emerge cleanly into space
     this.starField.position.set(0, 0, 0);
@@ -470,6 +476,8 @@ export class AtmosphereRenderer {
     const skyBrightness = rayleighFactor * dayFactor;
     const starT = Math.max(0, Math.min(1, (0.095 - skyBrightness) / 0.082));
     const starVis = starT * starT * (3 - 2 * starT);
-    this.starMaterial.opacity = starVis;
+    // Sunlit spacecraft and Earth expose like daylight photography: the same
+    // exposure cannot also show a bright field of stars. Preserve the night sky.
+    this.starMaterial.opacity = starVis * (1 - dayFactor * 0.97);
   }
 }

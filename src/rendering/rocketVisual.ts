@@ -341,6 +341,7 @@ export class RocketVisual {
     upper.position.y = yBase;
     this.enhanceMaterials(upper);
     stackGroup.add(upper);
+    this.addUpperStageHardware(stackGroup, yBase);
 
     const carbonMat = new THREE.MeshStandardMaterial({
       color: 0x181b20,
@@ -379,6 +380,50 @@ export class RocketVisual {
       stackGroup.add(paf);
       this.attachPayload(stackGroup, fairingAdapterY + 1.0, false);
     }
+  }
+
+  private addUpperStageHardware(parent: THREE.Group, baseY: number): void {
+    const titanium = new THREE.MeshStandardMaterial({ color: 0x8c9297, roughness: 0.5, metalness: 0.78 });
+    const painted = new THREE.MeshStandardMaterial({ color: 0xc9cdd0, roughness: 0.68, metalness: 0.12 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x25292d, roughness: 0.72, metalness: 0.35 });
+    const hardware = new THREE.Group();
+    hardware.position.y = baseY;
+    hardware.name = 'UpperStageServiceHardware';
+    for (const y of [2.0, 4.7, 7.4, 10.6]) {
+      const weld = new THREE.Mesh(new THREE.TorusGeometry(1.858, 0.012, 5, 64), titanium);
+      weld.rotation.x = Math.PI / 2;
+      weld.position.y = y;
+      hardware.add(weld);
+    }
+    // External cable raceway, access covers and pipe clamps give the cylindrical
+    // stage readable scale and relief without changing collision or flight data.
+    const raceway = new THREE.Mesh(new THREE.BoxGeometry(0.15, 8.4, 0.085), painted);
+    raceway.position.set(0, 6.1, 1.873);
+    hardware.add(raceway);
+    for (const y of [2.8, 5.4, 8.1, 9.8]) {
+      const clamp = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.055, 0.1), titanium);
+      clamp.position.set(0, y, 1.895);
+      hardware.add(clamp);
+    }
+    for (const y of [3.5, 8.8]) {
+      const cover = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.025, 20), dark);
+      cover.rotation.x = Math.PI / 2;
+      cover.position.set(0.7, y, 1.725);
+      cover.rotation.y = 0.38;
+      hardware.add(cover);
+    }
+    const bellBands = new THREE.InstancedMesh(new THREE.TorusGeometry(0.9, 0.016, 4, 48), titanium, 12);
+    const transform = new THREE.Object3D();
+    for (let i = 0; i < 12; i++) {
+      transform.position.set(0, 0.16 + i * 0.115, 0);
+      transform.rotation.x = Math.PI / 2;
+      transform.scale.setScalar(1.25 - i * 0.052);
+      transform.updateMatrix();
+      bellBands.setMatrixAt(i, transform.matrix);
+    }
+    hardware.add(bellBands);
+    hardware.traverse(object => { if ((object as THREE.Mesh).isMesh) (object as THREE.Mesh).castShadow = true; });
+    parent.add(hardware);
   }
 
   private attachPayload(stackGroup: THREE.Group, yBase: number, standalone: boolean): void {
@@ -500,17 +545,32 @@ export class RocketVisual {
       if (mesh.geometry && !mesh.geometry.attributes.normal) {
         mesh.geometry.computeVertexNormals();
       }
+      if (mesh.geometry && !mesh.geometry.hasAttribute('uv')) {
+        // Some model parts omit UVs. Give the barrel detail maps cylindrical
+        // coordinates rather than sampling every vertex at the same texel.
+        mesh.geometry = mesh.geometry.clone();
+        mesh.geometry.computeBoundingBox();
+        const box = mesh.geometry.boundingBox!;
+        const positions = mesh.geometry.getAttribute('position');
+        const coords = new Float32Array(positions.count * 2);
+        for (let i = 0; i < positions.count; i++) {
+          coords[i * 2] = 0.5 + Math.atan2(positions.getZ(i), positions.getX(i)) / (2 * Math.PI);
+          coords[i * 2 + 1] = (positions.getY(i) - box.min.y) / Math.max(0.001, box.max.y - box.min.y);
+        }
+        mesh.geometry.setAttribute('uv', new THREE.BufferAttribute(coords, 2));
+      }
 
       const mat = mesh.material;
       if (mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+        const hasUv = mesh.geometry.hasAttribute('uv');
         const std = (mat as THREE.MeshStandardMaterial).clone();
         const lum = std.color.r * 0.3 + std.color.g * 0.59 + std.color.b * 0.11;
         if (lum > 0.55) {
           std.color.setRGB(0.92, 0.93, 0.945);
           std.roughness = 0.34;
           std.metalness = 0.18;
-          std.roughnessMap = micro.fuselageRoughness;
-          if (!std.bumpMap) {
+          std.roughnessMap = hasUv ? micro.fuselageRoughness : null;
+          if (hasUv && !std.bumpMap) {
             std.bumpMap = micro.fuselageBump;
             std.bumpScale = 0.028;
           }
@@ -519,7 +579,7 @@ export class RocketVisual {
           std.color.setRGB(0.085, 0.092, 0.108);
           std.roughness = 0.42;
           std.metalness = 0.38;
-          if (!std.bumpMap) {
+          if (hasUv && !std.bumpMap) {
             std.bumpMap = micro.carbonBump;
             std.bumpScale = 0.022;
           }

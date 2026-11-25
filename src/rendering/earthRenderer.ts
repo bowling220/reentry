@@ -22,6 +22,7 @@ import {
 import { PLANET_CONFIG } from '../config/planetConfig';
 import { LoadedAssets } from '../assets/assetManager';
 import { Vec3d } from '../math/vec3d';
+import { capeImageryAlbedo } from './capeImagery';
 
 /**
  * Renders the continuous, real-scale spherical Earth (R = 6,371 km) using TSL shaders:
@@ -43,12 +44,12 @@ export class EarthRenderer {
     this.group = new THREE.Group();
     this.group.name = 'EarthPlanetaryRoot';
 
-    const earthGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM, 192, 128);
+    const earthGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM, 384, 256);
     this.earthMesh = new THREE.Mesh(earthGeo, this.createEarthMaterial(assets));
     this.earthMesh.frustumCulled = false;
     this.group.add(this.earthMesh);
 
-    const cloudGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM + 9_500, 144, 96);
+    const cloudGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM + 9_500, 384, 256);
     this.cloudMesh = new THREE.Mesh(cloudGeo, this.createCloudMaterial(assets));
     this.cloudMesh.frustumCulled = false;
     this.group.add(this.cloudMesh);
@@ -66,7 +67,9 @@ export class EarthRenderer {
     const sunDiffuse = max(ndotl, float(0.0));
 
     const baseUv = uv();
-    const daySample = assets.earthDayMap ? texture(assets.earthDayMap, baseUv).rgb : color(0x1f4f88);
+    const globalDay = assets.earthDayMap ? texture(assets.earthDayMap, baseUv).rgb : color(0x1f4f88);
+    const lonLat = baseUv.mul(vec2(360, 180)).sub(vec2(180, 90));
+    const daySample = capeImageryAlbedo(globalDay, assets, lonLat);
     const nightSample = assets.earthNightMap ? texture(assets.earthNightMap, baseUv).rgb : color(0x020308);
 
     const oceanScore = clamp(

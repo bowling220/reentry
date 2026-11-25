@@ -20,8 +20,8 @@ export interface LoadedAssets {
 /**
  * Loads external 3D spacecraft GLB models (Space Radar Falcon 9, NASA Saturn V, Starlink v1)
  * and planetary Earth textures (Solar System Scope / NASA Blue Marble, CC BY 4.0) for orbital flight.
- * Local Cape Canaveral terrain & ocean are rendered via procedural PBR shaders rather than flat
- * pasted satellite image decals so close-up views remain crisp, 3D-lit, and shadow-receiving.
+ * Georeferenced USGS albedo is shared by local PBR terrain and the spherical Earth.
+ * Procedural surface detail, 3D structures, and shadows remain in the near field.
  */
 export class AssetManager {
   private readonly gltfLoader: GLTFLoader;
@@ -44,6 +44,9 @@ export class AssetManager {
       earthDayMap,
       earthNightMap,
       earthCloudsMap,
+      capeSatLocal,
+      capeSatMid,
+      capeSatWide,
     ] = await Promise.all([
       this.loadGlb(assetUrl('models/falcon9-stage1.glb')),
       this.loadGlb(assetUrl('models/falcon9-upper.glb')),
@@ -52,6 +55,9 @@ export class AssetManager {
       this.loadTexture(assetUrl('textures/earth_daymap.jpg'), true, true),
       this.loadTexture(assetUrl('textures/earth_nightmap.jpg'), true, true),
       this.loadTexture(assetUrl('textures/earth_clouds.jpg'), false, true),
+      this.loadTexture(assetUrl('textures/cape_albedo_local.png'), true, false),
+      this.loadTexture(assetUrl('textures/cape_albedo_mid.png'), true, false),
+      this.loadTexture(assetUrl('textures/cape_albedo_wide.png'), true, false),
     ]);
 
     return {
@@ -62,9 +68,9 @@ export class AssetManager {
       earthDayMap,
       earthNightMap,
       earthCloudsMap,
-      capeSatLocal: null,
-      capeSatMid: null,
-      capeSatWide: null,
+      capeSatLocal,
+      capeSatMid,
+      capeSatWide,
     };
   }
 
