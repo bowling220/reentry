@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import {
+  abs,
   cameraPosition,
   clamp,
   cos,
@@ -17,24 +18,28 @@ import {
   sin,
   smoothstep,
   sub,
-  texture,
   time,
   uniform,
   vec2,
   vec3,
-  vec4,
 } from 'three/tsl';
+import { LANDING_PAD_OFFSET_LOCAL } from '../config/planetConfig';
 import { LoadedAssets } from '../assets/assetManager';
 import { Vec3d } from '../math/vec3d';
 import { getCapeTerrainElevationM } from '../simulation/terrainHeight';
 
 /**
- * Real-world Cape Canaveral satellite terrain (3 nested public-domain USGS National Map
- * orthoimagery layers blended radially with zero rectangular seams) + non-repetitive
- * distance-attenuated TSL Atlantic Ocean with Fresnel sky reflection and aerial haze.
- *
- * Smoothly dissolves between 24 km and 62 km altitude so high-altitude & spaceflight views
- * reveal Earth's continuous 8K spherical globe, continents, and curved atmospheric limb cleanly.
+ * Fully procedural PBR Cape Canaveral barrier-island terrain + realistic Atlantic Ocean:
+ * - Zero flat pasted satellite image decals!
+ * - True shadow-receiving MeshStandardNodeMaterial so the rocket, tower, strongback,
+ *   hangars, tanks, and 3D palms cast crisp grounded shadows across the coastal landscape.
+ * - Multi-scale organic procedural biomes matching Cape Canaveral's true geography:
+ *   crushed limestone industrial gravel around SLC-40/LZ-1, golden foredune sand & damp
+ *   tidal swash zone, Florida coastal palmetto/scrub barrier island, inland marshlands,
+ *   and western Banana River estuary shoreline.
+ * - Multi-octave directional Atlantic Ocean with animated shoreline breaking surf,
+ *   open-water whitecap foam, emerald coastal shallows, Fresnel sky reflection & sun glint.
+ * - Dissolves seamlessly into the real-scale 3D spherical Earth between 18 km and 54 km.
  */
 export class CapeTerrainOcean {
   public readonly group: THREE.Group;
@@ -47,81 +52,45 @@ export class CapeTerrainOcean {
   private readonly uAtmoHazeStrength = uniform(1.0);
   private readonly uRegionalFade = uniform(1.0);
 
-  private readonly detailConcreteTex: THREE.CanvasTexture;
-  private readonly detailGrassTex: THREE.CanvasTexture;
-  private readonly detailSandTex: THREE.CanvasTexture;
-
-  constructor(assets: LoadedAssets) {
+  constructor(_assets: LoadedAssets) {
     this.group = new THREE.Group();
     this.group.name = 'CapeTerrainAndOcean';
-
-    this.detailConcreteTex = this.createDetailMap('concrete');
-    this.detailGrassTex = this.createDetailMap('grass');
-    this.detailSandTex = this.createDetailMap('sand');
 
     this.oceanMesh = this.buildOceanDisk();
     this.group.add(this.oceanMesh);
 
-    this.terrainMesh = this.buildSatelliteTerrainDisk(assets);
+    this.terrainMesh = this.buildProceduralTerrainDisk();
     this.group.add(this.terrainMesh);
   }
 
-  private createDetailMap(kind: 'concrete' | 'grass' | 'sand'): THREE.CanvasTexture {
-    const size = 256;
-    const c = document.createElement('canvas');
-    c.width = c.height = size;
-    const ctx = c.getContext('2d')!;
-    let seed = kind === 'concrete' ? 4011 : kind === 'grass' ? 5021 : 6031;
-    const rand = () => {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
+  /**
+   * Non-repeating 4-octave directional organic noise in TSL (zero grid tiling artifacts!).
+   */
+  private proceduralFbm(px: any, pz: any, baseScale: number): any {
+    const x1 = px.mul(baseScale);
+    const z1 = pz.mul(baseScale);
+    const n1 = sin(x1.mul(1.0).add(z1.mul(0.73))).mul(cos(z1.mul(1.17).sub(x1.mul(0.41))));
 
-    ctx.fillStyle = '#808080';
-    ctx.fillRect(0, 0, size, size);
+    const x2 = px.mul(baseScale * 2.13).add(17.3);
+    const z2 = pz.mul(baseScale * 2.13).sub(9.7);
+    const n2 = sin(x2.mul(1.31).sub(z2.mul(0.89))).mul(cos(z2.mul(0.97).add(x2.mul(0.67))));
 
-    if (kind === 'concrete') {
-      // Crisp gravel, aggregate & subtle slab seams for close-up SLC-40 ground
-      for (let i = 0; i < 4200; i++) {
-        const v = 90 + Math.floor(rand() * 80);
-        ctx.fillStyle = `rgba(${v},${v},${v},0.35)`;
-        ctx.fillRect(rand() * size, rand() * size, 2 + rand() * 2, 2 + rand() * 2);
-      }
-      ctx.strokeStyle = 'rgba(72,72,72,0.32)';
-      ctx.lineWidth = 1.5;
-      for (let k = 0; k < size; k += 64) {
-        ctx.beginPath();
-        ctx.moveTo(k, 0);
-        ctx.lineTo(k, size);
-        ctx.moveTo(0, k);
-        ctx.lineTo(size, k);
-        ctx.stroke();
-      }
-    } else if (kind === 'grass') {
-      // Organic Florida coastal grass / scrub micro-texture
-      for (let i = 0; i < 3600; i++) {
-        const g = 88 + Math.floor(rand() * 88);
-        ctx.fillStyle = `rgba(${Math.floor(g * 0.92)},${g},${Math.floor(g * 0.84)},0.32)`;
-        ctx.fillRect(rand() * size, rand() * size, 2, 4 + rand() * 4);
-      }
-    } else {
-      // Fine Atlantic coastal beach sand ripples & grain
-      for (let y = 0; y < size; y += 6) {
-        ctx.fillStyle = y % 12 === 0 ? 'rgba(155,150,140,0.22)' : 'rgba(108,104,96,0.2)';
-        ctx.fillRect(0, y, size, 3);
-      }
-      for (let i = 0; i < 3200; i++) {
-        const v = 100 + Math.floor(rand() * 70);
-        ctx.fillStyle = `rgba(${v},${v - 2},${v - 6},0.28)`;
-        ctx.fillRect(rand() * size, rand() * size, 2, 2);
-      }
-    }
+    const x3 = px.mul(baseScale * 4.71).sub(31.1);
+    const z3 = pz.mul(baseScale * 4.71).add(23.4);
+    const n3 = sin(x3.mul(0.83).add(z3.mul(1.41))).mul(cos(z3.mul(1.23).sub(x3.mul(0.79))));
 
-    const tex = new THREE.CanvasTexture(c);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = 8;
-    tex.needsUpdate = true;
-    return tex;
+    const x4 = px.mul(baseScale * 10.37).add(5.1);
+    const z4 = pz.mul(baseScale * 10.37).sub(14.9);
+    const n4 = sin(x4.mul(1.47).sub(z4.mul(0.63))).mul(cos(z4.mul(1.11).add(x4.mul(1.09))));
+
+    // Normalize roughly to [0, 1]
+    return n1
+      .mul(0.5)
+      .add(n2.mul(0.28))
+      .add(n3.mul(0.14))
+      .add(n4.mul(0.08))
+      .mul(0.5)
+      .add(0.5);
   }
 
   private buildCurvedRadialDiskGeometry(
@@ -182,88 +151,116 @@ export class CapeTerrainOcean {
     return geo;
   }
 
-  private buildSatelliteTerrainDisk(assets: LoadedAssets): THREE.Mesh {
-    const maxRadius = 88_000;
-    const geo = this.buildCurvedRadialDiskGeometry(maxRadius, 128, 128, true, 0.25);
+  private buildProceduralTerrainDisk(): THREE.Mesh {
+    const maxRadius = 82_000;
+    const geo = this.buildCurvedRadialDiskGeometry(maxRadius, 144, 144, true, 0.08);
 
-    const mat = new THREE.MeshBasicNodeMaterial();
+    // True PBR MeshStandardNodeMaterial so real sun shadows from rocket/towers/palms fall onto terrain!
+    const mat = new THREE.MeshStandardNodeMaterial();
     mat.transparent = true;
     mat.depthWrite = true;
+    mat.metalness = 0.0;
 
     const pLocal = positionLocal;
     const pWorld = positionWorld;
-    const nWorld = normalize(normalWorld);
-    const sunDir = normalize(this.uSunDir);
-
-    const uvLocal = vec2(
-      pLocal.x.div(4400.0).add(0.5),
-      pLocal.z.negate().div(4400.0).add(0.5)
-    );
-    const uvMid = vec2(
-      pLocal.x.div(36000.0).add(0.5),
-      pLocal.z.negate().div(36000.0).add(0.5)
-    );
-    const uvWide = vec2(
-      pLocal.x.div(180000.0).add(0.5),
-      pLocal.z.negate().div(180000.0).add(0.5)
-    );
-
-    const satLocal = assets.capeSatLocal
-      ? texture(assets.capeSatLocal, clamp(uvLocal, vec2(0.002), vec2(0.998)))
-      : vec4(0.24, 0.3, 0.2, 1.0);
-    const satMid = assets.capeSatMid
-      ? texture(assets.capeSatMid, clamp(uvMid, vec2(0.002), vec2(0.998)))
-      : vec4(0.22, 0.28, 0.19, 1.0);
-    const satWide = assets.capeSatWide
-      ? texture(assets.capeSatWide, clamp(uvWide, vec2(0.002), vec2(0.998)))
-      : vec4(0.2, 0.26, 0.18, 1.0);
-
-    const radialDist = length(vec2(pLocal.x, pLocal.z));
-    const localToMid = smoothstep(float(1450.0), float(2050.0), radialDist);
-    const midToWide = smoothstep(float(12500.0), float(17000.0), radialDist);
-
-    const blend1Rgb = mix(satLocal.rgb, satMid.rgb, localToMid);
-    const blend1A = mix(satLocal.a, satMid.a, localToMid);
-
-    const satRgb = mix(blend1Rgb, satWide.rgb, midToWide);
-    const satAlpha = mix(blend1A, satWide.a, midToWide);
-
-    // Close-range layered PBR detail materials blended naturally with USGS satellite imagery
-    // (concrete/gravel on bright neutral areas, grass/scrub on green areas, sand on warm beach tones)
     const camDist = length(sub(cameraPosition, pWorld));
-    const detailFade = float(1.0).sub(smoothstep(float(90.0), float(950.0), camDist));
-    const uvDetailNear = vec2(pLocal.x.div(22.0), pLocal.z.div(22.0));
-    const uvDetailFar = vec2(pLocal.x.div(85.0), pLocal.z.div(85.0));
+    const radialDist = length(vec2(pLocal.x, pLocal.z));
 
-    const dConc = texture(this.detailConcreteTex, uvDetailNear).rgb.mul(0.65).add(
-      texture(this.detailConcreteTex, uvDetailFar).rgb.mul(0.35)
+    // Exact Cape Canaveral Atlantic shoreline curve matching terrainHeight.ts
+    const coastX = float(490.0)
+      .add(pLocal.z.mul(0.21))
+      .add(sin(pLocal.z.mul(0.00055)).mul(38.0));
+    const distInland = coastX.sub(pLocal.x);
+
+    // Multi-scale organic procedural variation (macro biome -> meso scrub -> micro gravel/sand grain)
+    const macroN = this.proceduralFbm(pLocal.x, pLocal.z, 0.0016);
+    const mesoN = this.proceduralFbm(pLocal.x, pLocal.z, 0.014);
+    const microN = this.proceduralFbm(pLocal.x, pLocal.z, 0.14);
+    const fineGrain = this.proceduralFbm(pLocal.x, pLocal.z, 0.72);
+    const nearFade = float(1.0).sub(smoothstep(float(60.0), float(750.0), camDist));
+    const microMod = mix(float(1.0), fineGrain.mul(0.32).add(0.84), nearFade);
+
+    // 1. Coastal Atlantic Beach Sand (wet swash zone -> warm bright dune sand)
+    const wetSandCol = vec3(0.42, 0.37, 0.29);
+    const drySandCol = vec3(0.76, 0.7, 0.57);
+    const duneSandCol = vec3(0.68, 0.62, 0.49);
+    const wetFactor = smoothstep(float(2.0), float(26.0), distInland);
+    const beachSand = mix(wetSandCol, mix(drySandCol, duneSandCol, mesoN), wetFactor);
+
+    // 2. Florida Barrier-Island Coastal Scrub & Saw Palmetto Grasslands
+    const scrubDark = vec3(0.11, 0.18, 0.09);
+    const scrubOlive = vec3(0.19, 0.27, 0.13);
+    const dryGrass = vec3(0.36, 0.37, 0.21);
+    const sandyPatch = vec3(0.56, 0.51, 0.39);
+    const marshDark = vec3(0.08, 0.13, 0.08);
+
+    const scrubBase = mix(scrubDark, scrubOlive, mesoN);
+    const scrubWithGrass = mix(scrubBase, dryGrass, smoothstep(float(0.45), float(0.82), macroN));
+    const scrubWithSand = mix(
+      scrubWithGrass,
+      sandyPatch,
+      smoothstep(float(0.64), float(0.92), microN.mul(0.65).add(macroN.mul(0.35))).mul(0.55)
     );
-    const dGrass = texture(this.detailGrassTex, uvDetailNear).rgb.mul(0.65).add(
-      texture(this.detailGrassTex, uvDetailFar).rgb.mul(0.35)
+
+    // Coastal transition: beach sand (0..58m) -> dune sea-oats -> dense inland scrub -> marshlands
+    const sandToScrub = smoothstep(float(36.0), float(108.0), distInland.add(mesoN.sub(0.5).mul(26.0)));
+    const marshMask = smoothstep(float(920.0), float(1550.0), distInland.add(macroN.mul(180.0)));
+    const naturalLand = mix(mix(beachSand, scrubWithSand, sandToScrub), marshDark, marshMask.mul(0.58));
+
+    // 3. Graded Industrial Crushed-Limestone / Concrete Gravel around SLC-40 & LZ-1
+    const padDist = length(vec2(pLocal.x, pLocal.z));
+    const lzDist = length(
+      vec2(
+        pLocal.x.sub(LANDING_PAD_OFFSET_LOCAL.eastM),
+        pLocal.z.sub(LANDING_PAD_OFFSET_LOCAL.southM)
+      )
     );
-    const dSand = texture(this.detailSandTex, uvDetailNear).rgb;
+    const hifDist = length(vec2(pLocal.x.add(38.0), pLocal.z.sub(215.0)));
 
-    const greenScore = clamp(satRgb.g.sub(satRgb.r).mul(6.5), float(0.0), float(1.0));
-    const sandScore = clamp(satRgb.r.sub(satRgb.b).mul(4.0).mul(float(1.0).sub(greenScore)), float(0.0), float(1.0));
-    const blendedDetail = mix(mix(dConc, dSand, sandScore), dGrass, greenScore);
-    // Center around 1.0 multiplicative micro-albedo modulation so satellite color accuracy stays intact
-    const detailMod = vec3(1.0).add(blendedDetail.sub(vec3(0.5)).mul(0.68).mul(detailFade));
+    const slcApronMask = float(1.0).sub(
+      smoothstep(float(105.0), float(185.0), padDist.add(mesoN.sub(0.5).mul(28.0)))
+    );
+    const lzApronMask = float(1.0).sub(
+      smoothstep(float(55.0), float(105.0), lzDist.add(mesoN.sub(0.5).mul(16.0)))
+    );
+    const hifApronMask = float(1.0).sub(
+      smoothstep(float(65.0), float(115.0), hifDist.add(mesoN.sub(0.5).mul(18.0)))
+    );
+    const industrialMask = clamp(slcApronMask.add(lzApronMask).add(hifApronMask), float(0.0), float(1.0));
 
-    const ndotl = max(dot(nWorld, sunDir), float(0.0));
-    const sunMod = ndotl.mul(0.92).add(0.24);
-    const litTerrain = satRgb.mul(detailMod).mul(sunMod);
+    const gravelLight = vec3(0.55, 0.54, 0.5);
+    const gravelDark = vec3(0.36, 0.36, 0.34);
+    const gravelDirt = vec3(0.46, 0.43, 0.37);
+    const industrialGravel = mix(
+      mix(gravelDark, gravelLight, microN),
+      gravelDirt,
+      smoothstep(float(0.45), float(0.85), mesoN).mul(0.45)
+    );
 
+    const surfaceAlbedo = mix(naturalLand, industrialGravel, industrialMask).mul(microMod);
+
+    // Distance-attenuated atmospheric aerial perspective haze
     const hazeFactor = float(1.0)
-      .sub(exp(camDist.mul(-0.000018)))
+      .sub(exp(camDist.mul(-0.000017)))
       .mul(this.uAtmoHazeStrength)
-      .mul(0.75);
-    const finalColor = mix(litTerrain, this.uHorizonColor, clamp(hazeFactor, float(0.0), float(0.84)));
+      .mul(0.76);
+    const finalAlbedo = mix(surfaceAlbedo, this.uHorizonColor, clamp(hazeFactor, float(0.0), float(0.85)));
 
-    const outerCircleFade = float(1.0).sub(smoothstep(float(54000.0), float(84000.0), radialDist));
-    const waterAlphaFeather = smoothstep(float(0.15), float(0.95), satAlpha);
+    // Wet sand near waterline is glossier; scrub & crushed gravel are matte
+    const wetSpecRough = mix(float(0.38), float(0.88), wetFactor);
+    const finalRoughness = mix(wetSpecRough, float(0.93), max(sandToScrub, industrialMask));
 
-    mat.colorNode = finalColor;
-    mat.opacityNode = waterAlphaFeather.mul(outerCircleFade).mul(this.uRegionalFade);
+    // Cleanly feather terrain alpha at the Atlantic ocean waterline AND western Banana River lagoon
+    const atlanticLandMask = smoothstep(float(-4.0), float(14.0), distInland);
+    // Western Banana River waterway (~1.8 km to 4.2 km west of pad) creates authentic barrier island!
+    const lagoonCenter = float(-2850.0).add(sin(pLocal.z.mul(0.00032)).mul(420.0));
+    const distFromLagoon = abs(pLocal.x.sub(lagoonCenter));
+    const lagoonCutout = smoothstep(float(820.0), float(1180.0), distFromLagoon);
+    const outerCircleFade = float(1.0).sub(smoothstep(float(48000.0), float(78000.0), radialDist));
+
+    mat.colorNode = finalAlbedo;
+    mat.roughnessNode = finalRoughness;
+    mat.opacityNode = atlanticLandMask.mul(lagoonCutout).mul(outerCircleFade).mul(this.uRegionalFade);
 
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
@@ -273,8 +270,8 @@ export class CapeTerrainOcean {
   }
 
   private buildOceanDisk(): THREE.Mesh {
-    const maxRadius = 112_000;
-    const geo = this.buildCurvedRadialDiskGeometry(maxRadius, 96, 128, false, -0.35);
+    const maxRadius = 115_000;
+    const geo = this.buildCurvedRadialDiskGeometry(maxRadius, 112, 144, false, -0.22);
 
     const mat = new THREE.MeshBasicNodeMaterial();
     mat.transparent = true;
@@ -287,47 +284,91 @@ export class CapeTerrainOcean {
     const viewDir = normalize(sub(cameraPosition, pWorld));
     const camDist = length(sub(cameraPosition, pWorld));
 
-    const nearDetail = float(1.0).div(float(1.0).add(camDist.mul(0.00065)));
-    const midDetail = float(1.0).div(float(1.0).add(camDist.mul(0.00009)));
-    const t = time.mul(0.72);
+    const nearDetail = float(1.0).div(float(1.0).add(camDist.mul(0.00055)));
+    const midDetail = float(1.0).div(float(1.0).add(camDist.mul(0.000075)));
+    const t = time.mul(0.82);
 
-    const w1 = sin(pLocal.x.mul(0.061).add(pLocal.z.mul(0.023)).add(t.mul(1.1))).mul(0.028).mul(nearDetail);
-    const w2 = cos(pLocal.x.mul(-0.043).add(pLocal.z.mul(0.079)).sub(t.mul(1.47))).mul(0.022).mul(nearDetail);
-    const w3 = sin(pLocal.x.mul(0.137).sub(pLocal.z.mul(0.113)).add(t.mul(2.13))).mul(0.014).mul(nearDetail);
-    const w4 = cos(pLocal.x.mul(0.0117).add(pLocal.z.mul(0.0089)).add(t.mul(0.45))).mul(0.018).mul(midDetail);
-    const w5 = sin(pLocal.x.mul(-0.0063).add(pLocal.z.mul(0.0141)).sub(t.mul(0.37))).mul(0.014).mul(midDetail);
+    // 7-octave multi-directional Atlantic swells + wind chop + capillary ripples
+    const w1 = sin(pLocal.x.mul(0.058).add(pLocal.z.mul(0.021)).add(t.mul(1.25))).mul(0.032).mul(nearDetail);
+    const w2 = cos(pLocal.x.mul(-0.041).add(pLocal.z.mul(0.074)).sub(t.mul(1.52))).mul(0.024).mul(nearDetail);
+    const w3 = sin(pLocal.x.mul(0.145).sub(pLocal.z.mul(0.118)).add(t.mul(2.35))).mul(0.017).mul(nearDetail);
+    const w4 = cos(pLocal.x.mul(0.285).add(pLocal.z.mul(0.193)).sub(t.mul(3.15))).mul(0.011).mul(nearDetail);
+    const w5 = cos(pLocal.x.mul(0.0124).add(pLocal.z.mul(0.0082)).add(t.mul(0.52))).mul(0.022).mul(midDetail);
+    const w6 = sin(pLocal.x.mul(-0.0067).add(pLocal.z.mul(0.0138)).sub(t.mul(0.41))).mul(0.016).mul(midDetail);
+    const w7 = sin(pLocal.x.mul(0.0029).add(pLocal.z.mul(-0.0034)).add(t.mul(0.21))).mul(0.012);
 
-    const nx = w1.add(w3).add(w4);
-    const nz = w2.sub(w3.mul(0.7)).add(w5);
+    const nx = w1.add(w3).add(w4).add(w5).add(w7);
+    const nz = w2.sub(w3.mul(0.75)).add(w4.mul(0.6)).add(w6);
     const nWave = normalize(nBase.add(vec3(nx, float(0.0), nz)));
 
     const ndotl = max(dot(nWave, sunDir), float(0.0));
     const ndotv = clamp(dot(nWave, viewDir), float(0.0), float(1.0));
-    const fresnel = pow(float(1.0).sub(ndotv), float(4.5)).mul(0.85).add(0.04);
+    const fresnel = pow(float(1.0).sub(ndotv), float(4.8)).mul(0.88).add(0.035);
 
-    const offshoreT = smoothstep(float(400.0), float(14000.0), pLocal.x);
-    const coastalTeal = vec3(0.055, 0.22, 0.28);
-    const deepAtlantic = vec3(0.014, 0.058, 0.135);
-    const waterBody = mix(coastalTeal, deepAtlantic, offshoreT).mul(ndotl.mul(0.95).add(0.16));
+    // Distance offshore from the real Atlantic shoreline
+    const coastX = float(490.0)
+      .add(pLocal.z.mul(0.21))
+      .add(sin(pLocal.z.mul(0.00055)).mul(38.0));
+    const offshoreM = pLocal.x.sub(coastX);
 
-    const skyRefl = mix(this.uZenithColor, this.uHorizonColor, pow(float(1.0).sub(ndotv), float(1.6)));
+    // Shallow turquoise-emerald coastal water -> rich mid-shelf teal -> deep Atlantic indigo
+    const shallowT = smoothstep(float(0.0), float(420.0), offshoreM);
+    const deepT = smoothstep(float(250.0), float(9500.0), offshoreM);
+    const surfTeal = vec3(0.08, 0.34, 0.36);
+    const shelfBlue = vec3(0.032, 0.155, 0.24);
+    const deepAtlantic = vec3(0.011, 0.048, 0.125);
+    const waterColor = mix(mix(surfTeal, shelfBlue, shallowT), deepAtlantic, deepT);
 
+    // Subtle sunlit subsurface scattering glow through wave crests
+    const crestHeight = clamp(w1.add(w2).add(w5).mul(14.0), float(0.0), float(1.0));
+    const sssGlow = vec3(0.06, 0.28, 0.3).mul(crestHeight).mul(ndotl).mul(0.45);
+    const waterBody = waterColor.mul(ndotl.mul(0.95).add(0.14)).add(sssGlow);
+
+    // Sky reflection & multi-lobe crisp solar sparkle
+    const skyRefl = mix(this.uZenithColor, this.uHorizonColor, pow(float(1.0).sub(ndotv), float(1.55)));
     const halfVec = normalize(sunDir.add(viewDir));
     const nh = max(dot(nWave, halfVec), float(0.0));
-    const specTight = pow(nh, float(260.0)).mul(1.85).mul(nearDetail.mul(0.7).add(0.3));
-    const specBroad = pow(nh, float(28.0)).mul(0.22);
-    const sunGlint = vec3(1.0, 0.95, 0.85).mul(specTight.add(specBroad));
+    const specGlitter = pow(nh, float(420.0)).mul(2.6).mul(nearDetail.mul(0.75).add(0.25));
+    const specTight = pow(nh, float(95.0)).mul(0.65);
+    const specBroad = pow(nh, float(20.0)).mul(0.14);
+    const sunGlint = vec3(1.0, 0.96, 0.86).mul(specGlitter.add(specTight).add(specBroad));
 
-    const waterLit = mix(waterBody, skyRefl.mul(ndotl.mul(0.75).add(0.25)), fresnel).add(sunGlint);
+    // Animated rolling Atlantic surf breakers & shoreline foam along Cape Canaveral beach!
+    const surfNoise = this.proceduralFbm(pLocal.x, pLocal.z, 0.045);
+    const surfZone = smoothstep(float(-12.0), float(10.0), offshoreM)
+      .mul(float(1.0).sub(smoothstep(float(22.0), float(135.0), offshoreM)));
+    const breakerWave = sin(offshoreM.mul(0.17).add(t.mul(1.85)).add(surfNoise.mul(4.5)));
+    const surfFoam = smoothstep(float(0.42), float(0.88), breakerWave)
+      .mul(surfZone)
+      .mul(0.78)
+      .add(
+        smoothstep(float(-8.0), float(6.0), offshoreM)
+          .mul(float(1.0).sub(smoothstep(float(8.0), float(28.0), offshoreM)))
+          .mul(surfNoise.mul(0.55).add(0.35))
+      );
+
+    // Subtle open-ocean whitecap foam flecks on choppy crests
+    const whitecap = smoothstep(float(0.74), float(0.95), crestHeight.mul(surfNoise.mul(0.7).add(0.5)))
+      .mul(nearDetail)
+      .mul(0.35);
+
+    const totalFoam = clamp(surfFoam.add(whitecap), float(0.0), float(0.92));
+    const foamColor = vec3(0.92, 0.95, 0.97).mul(ndotl.mul(0.82).add(0.22));
+
+    const waterLit = mix(
+      mix(waterBody, skyRefl.mul(ndotl.mul(0.78).add(0.22)), fresnel).add(sunGlint),
+      foamColor,
+      totalFoam
+    );
 
     const hazeFactor = float(1.0)
-      .sub(exp(camDist.mul(-0.000018)))
+      .sub(exp(camDist.mul(-0.000017)))
       .mul(this.uAtmoHazeStrength)
-      .mul(0.78);
+      .mul(0.8);
     const finalWater = mix(waterLit, this.uHorizonColor, clamp(hazeFactor, float(0.0), float(0.88)));
 
     const radialDist = length(vec2(pLocal.x, pLocal.z));
-    const outerFade = float(1.0).sub(smoothstep(float(70000.0), float(108000.0), radialDist));
+    const outerFade = float(1.0).sub(smoothstep(float(68000.0), float(110000.0), radialDist));
 
     mat.colorNode = finalWater;
     mat.opacityNode = outerFade.mul(this.uRegionalFade);
@@ -349,14 +390,13 @@ export class CapeTerrainOcean {
     this.uHorizonColor.value.set(horizonColor.r, horizonColor.g, horizonColor.b);
     this.uZenithColor.value.set(zenithColor.r, zenithColor.g, zenithColor.b);
 
-    // Aerial haze matches true atmospheric scale height (~9 km)
     const haze = Math.exp(-Math.max(0, cameraAltitudeM) / 9_500);
     this.uAtmoHazeStrength.value = haze;
 
-    // Dissolve regional Cape Canaveral patch smoothly between 24 km and 62 km so Earth's
-    // continuous 8K spherical globe & glowing blue limb dominate upper atmosphere & space views
-    const altFade = 1 - Math.max(0, Math.min(1, (cameraAltitudeM - 24_000) / 38_000));
-    const visible = altFade > 0.01 && distFromCapeM < 260_000;
+    // Dissolve regional procedural Cape Canaveral patch smoothly between 20 km and 56 km
+    // so Earth's continuous 8K spherical globe & glowing limb dominate upper atmosphere & space
+    const altFade = 1 - Math.max(0, Math.min(1, (cameraAltitudeM - 20_000) / 36_000));
+    const visible = altFade > 0.01 && distFromCapeM < 250_000;
     this.uRegionalFade.value = altFade;
     this.terrainMesh.visible = visible;
     this.oceanMesh.visible = visible;

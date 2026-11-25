@@ -25,10 +25,10 @@ import { Vec3d } from '../math/vec3d';
 
 /**
  * Renders the continuous, real-scale spherical Earth (R = 6,371 km) using TSL shaders:
- * - 8K NASA / Solar System Scope day imagery
- * - 2K night city-lights on the dark hemisphere
- * - Ocean specular glint, bright atmospheric Rayleigh limb scatter, and golden terminator glow
- * - Rotating planetary 2K cloud shell (always mounted; smoothly fades in via uniform above 14 km)
+ * - 8K NASA / Solar System Scope day imagery with procedural grazing-light topographic relief
+ * - 2K night city-lights on the dark hemisphere with crisp golden coastal/urban glow
+ * - Dual-lobe ocean specular sun glint, deep atmospheric Rayleigh limb scatter, and sunset terminator
+ * - Rotating planetary 8K cloud shell with cast ground/ocean shadows (fading smoothly above 16 km)
  */
 export class EarthRenderer {
   public readonly group: THREE.Group;
@@ -48,7 +48,7 @@ export class EarthRenderer {
     this.earthMesh.frustumCulled = false;
     this.group.add(this.earthMesh);
 
-    const cloudGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM + 9_500, 128, 96);
+    const cloudGeo = new THREE.SphereGeometry(PLANET_CONFIG.meanRadiusM + 9_500, 144, 96);
     this.cloudMesh = new THREE.Mesh(cloudGeo, this.createCloudMaterial(assets));
     this.cloudMesh.frustumCulled = false;
     this.group.add(this.cloudMesh);
@@ -65,41 +65,63 @@ export class EarthRenderer {
     const dayFactor = smoothstep(float(-0.14), float(0.18), ndotl);
     const sunDiffuse = max(ndotl, float(0.0));
 
-    const daySample = assets.earthDayMap ? texture(assets.earthDayMap).rgb : color(0x1f4f88);
-    const nightSample = assets.earthNightMap ? texture(assets.earthNightMap).rgb : color(0x020308);
+    const baseUv = uv();
+    const daySample = assets.earthDayMap ? texture(assets.earthDayMap, baseUv).rgb : color(0x1f4f88);
+    const nightSample = assets.earthNightMap ? texture(assets.earthNightMap, baseUv).rgb : color(0x020308);
 
     const oceanScore = clamp(
-      daySample.b.sub(max(daySample.r, daySample.g)).mul(5.5),
+      daySample.b.sub(max(daySample.r, daySample.g)).mul(5.8),
       float(0.0),
       float(1.0)
     );
+    const landScore = float(1.0).sub(oceanScore);
 
+    // Subtle topographic slope relief derived from local daymap luminance gradient (makes mountains & coasts pop!)
+    const eps = float(0.00055);
+    const sRight = assets.earthDayMap ? texture(assets.earthDayMap, baseUv.add(vec2(eps, float(0.0)))).rgb : daySample;
+    const sUp = assets.earthDayMap ? texture(assets.earthDayMap, baseUv.add(vec2(float(0.0), eps))).rgb : daySample;
+    const lumC = dot(daySample, vec3(0.299, 0.587, 0.114));
+    const lumR = dot(sRight, vec3(0.299, 0.587, 0.114));
+    const lumU = dot(sUp, vec3(0.299, 0.587, 0.114));
+    const reliefShade = clamp(
+      float(1.0).add(lumR.sub(lumC).add(lumU.sub(lumC)).mul(3.4).mul(landScore)),
+      float(0.76),
+      float(1.24)
+    );
+
+    // Crisp dual-lobe ocean specular reflection from orbit
     const halfVec = normalize(sunDir.add(viewDir));
     const specAngle = max(dot(nWorld, halfVec), float(0.0));
-    const oceanSpec = pow(specAngle, float(54.0)).mul(oceanScore).mul(dayFactor).mul(0.7);
+    const oceanSpec = pow(specAngle, float(84.0))
+      .mul(0.85)
+      .add(pow(specAngle, float(18.0)).mul(0.16))
+      .mul(oceanScore)
+      .mul(dayFactor);
 
-    // Delicate blue Rayleigh atmospheric haze wrapping Earth's curved limb without washing out oceans/continents
+    // Realistic orbital Rayleigh atmospheric veil wrapping Earth's curved horizon
     const ndotv = clamp(dot(nWorld, viewDir), float(0.0), float(1.0));
-    const fresnel = pow(float(1.0).sub(ndotv), float(4.0));
-    const limbScatter = vec3(0.16, 0.48, 0.98).mul(fresnel).mul(dayFactor.mul(0.75).add(0.03));
+    const fresnel = pow(float(1.0).sub(ndotv), float(3.8));
+    const limbScatter = vec3(0.18, 0.52, 1.0).mul(fresnel).mul(dayFactor.mul(0.82).add(0.025));
 
+    // Warm golden-red sunset terminator scatter band
     const terminatorBand = smoothstep(float(-0.18), float(0.0), ndotl)
       .mul(float(1.0).sub(smoothstep(float(0.0), float(0.22), ndotl)));
-    const terminatorGlow = vec3(0.96, 0.36, 0.12).mul(terminatorBand).mul(0.32);
+    const terminatorGlow = vec3(0.98, 0.38, 0.12).mul(terminatorBand).mul(0.36);
 
-    // Subtle 8K cloud shadow cast onto Earth's oceans & continents for genuine orbital depth
+    // 8K cloud shadow cast onto oceans & continents for orbital depth
     const cloudShadowSample = assets.earthCloudsMap
-      ? texture(assets.earthCloudsMap, uv().add(vec2(0.0018, -0.0012))).r
+      ? texture(assets.earthCloudsMap, baseUv.add(vec2(0.0018, -0.0012))).r
       : float(0.0);
     const cloudShadowMask = float(1.0).sub(
-      smoothstep(float(0.32), float(0.85), cloudShadowSample).mul(0.28).mul(this.uCloudOpacity)
+      smoothstep(float(0.3), float(0.85), cloudShadowSample).mul(0.32).mul(this.uCloudOpacity)
     );
 
     const dayLit = daySample
-      .mul(sunDiffuse.mul(1.1).add(0.032))
+      .mul(reliefShade)
+      .mul(sunDiffuse.mul(1.14).add(0.028))
       .mul(cloudShadowMask)
       .add(vec3(1.0, 0.96, 0.88).mul(oceanSpec).mul(cloudShadowMask));
-    const nightLit = daySample.mul(0.009).add(nightSample.mul(vec3(1.25, 0.94, 0.62)).mul(1.65));
+    const nightLit = daySample.mul(0.007).add(nightSample.mul(vec3(1.28, 0.92, 0.58)).mul(1.75));
 
     mat.colorNode = mix(nightLit, dayLit, dayFactor).add(limbScatter).add(terminatorGlow);
     return mat;
@@ -116,15 +138,14 @@ export class EarthRenderer {
     const sunLit = smoothstep(float(-0.18), float(0.25), ndotl);
 
     const cloudRaw = assets.earthCloudsMap ? texture(assets.earthCloudsMap).r : float(0.0);
-    // Crisp meteorological cloud contrast so deep blue oceans & continents shine clearly through gaps
     const cloudVal = smoothstep(float(0.22), float(0.84), cloudRaw);
 
     const sunsetTint = smoothstep(float(-0.15), float(0.02), ndotl)
       .mul(float(1.0).sub(smoothstep(float(0.02), float(0.22), ndotl)));
 
-    const cloudColor = vec3(0.96, 0.97, 1.0)
+    const cloudColor = vec3(0.97, 0.98, 1.0)
       .mul(sunLit.mul(0.96).add(0.04))
-      .add(vec3(0.92, 0.42, 0.18).mul(sunsetTint).mul(0.35));
+      .add(vec3(0.94, 0.44, 0.18).mul(sunsetTint).mul(0.38));
 
     mat.colorNode = cloudColor;
     mat.opacityNode = cloudVal.mul(this.uCloudOpacity).mul(sunLit.mul(0.9).add(0.1));
@@ -143,13 +164,13 @@ export class EarthRenderer {
     this.cloudSpinRad += dt * 0.000045;
     this.cloudMesh.rotation.y = this.cloudSpinRad;
 
-    // Slight radius offset below 35 km prevents any z-fighting underneath USGS regional terrain
+    // Slight radius offset below 35 km prevents any z-fighting underneath regional procedural Cape terrain
     const lowAltBias = Math.max(0, 1 - cameraAltitudeM / 35_000);
     const earthScale = 1 - (65 * lowAltBias) / PLANET_CONFIG.meanRadiusM;
     this.earthMesh.scale.setScalar(earthScale);
 
-    // Cross-fade global 2K weather clouds in smoothly from 14 km -> 34 km
-    const globalCloudFade = Math.max(0, Math.min(0.62, (cameraAltitudeM - 14_000) / 22_000));
+    // Cross-fade global 8K planetary cloud shell cleanly from 16 km -> 38 km
+    const globalCloudFade = Math.max(0, Math.min(0.66, (cameraAltitudeM - 16_000) / 22_000));
     this.uCloudOpacity.value = globalCloudFade;
   }
 }

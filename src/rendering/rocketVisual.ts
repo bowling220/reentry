@@ -35,6 +35,87 @@ interface FinControl {
   axisIndex: number;
 }
 
+interface AerospaceMicroMaps {
+  fuselageBump: THREE.CanvasTexture;
+  fuselageRoughness: THREE.CanvasTexture;
+  carbonBump: THREE.CanvasTexture;
+}
+
+let cachedMicroMaps: AerospaceMicroMaps | null = null;
+
+function getAerospaceMicroMaps(): AerospaceMicroMaps {
+  if (cachedMicroMaps) return cachedMicroMaps;
+
+  const size = 256;
+  const makeTex = (draw: (ctx: CanvasRenderingContext2D) => void) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    draw(c.getContext('2d')!);
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(3, 8);
+    tex.anisotropy = 8;
+    tex.needsUpdate = true;
+    return tex;
+  };
+
+  let seed = 918273;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+
+  // Aluminum-lithium welded barrel ring seams + subtle rivet/weld micro-relief
+  const fuselageBump = makeTex((ctx) => {
+    ctx.fillStyle = '#808080';
+    ctx.fillRect(0, 0, size, size);
+    ctx.strokeStyle = '#5a5a5a';
+    ctx.lineWidth = 2;
+    for (let y = 0; y < size; y += 64) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(size, y);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#6c6c6c';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < size; x += 128) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, size);
+      ctx.stroke();
+    }
+  });
+
+  // Subtle painted-metal & cryogenic frost/patina roughness variation (eliminates flat plastic sheen)
+  const fuselageRoughness = makeTex((ctx) => {
+    ctx.fillStyle = '#585858';
+    ctx.fillRect(0, 0, size, size);
+    for (let i = 0; i < 650; i++) {
+      const v = 54 + Math.floor(rand() * 58);
+      ctx.fillStyle = `rgba(${v},${v},${v},0.22)`;
+      ctx.fillRect(rand() * size, rand() * size, 6 + rand() * 24, 3 + rand() * 14);
+    }
+  });
+
+  // Fine diagonal aerospace carbon-fiber composite weave for interstage & landing legs
+  const carbonBump = makeTex((ctx) => {
+    ctx.fillStyle = '#707070';
+    ctx.fillRect(0, 0, size, size);
+    for (let y = 0; y < size; y += 8) {
+      for (let x = 0; x < size; x += 8) {
+        const bright = ((x + y) / 8) % 2 === 0;
+        ctx.fillStyle = bright ? '#989898' : '#585858';
+        ctx.fillRect(x, y, 4, 4);
+      }
+    }
+  });
+  carbonBump.repeat.set(8, 8);
+
+  cachedMicroMaps = { fuselageBump, fuselageRoughness, carbonBump };
+  return cachedMicroMaps;
+}
+
 /**
  * Modular multistage visual rig for any REENTRY-9 spacecraft configuration:
  * - Full orbital stack (Stage 1 + Stage 2 + Fairings + Starlink Payload)
@@ -53,6 +134,7 @@ export class RocketVisual {
   private readonly assets: LoadedAssets;
   private legPivots: LegPivot[] = [];
   private finControls: FinControl[] = [];
+  private nozzleThroatMat: THREE.MeshStandardMaterial | null = null;
 
   // Dynamic reentry plasma bow-shock VFX
   private readonly reentryGroup: THREE.Group;
@@ -158,6 +240,7 @@ export class RocketVisual {
     }
     this.legPivots = [];
     this.finControls = [];
+    this.nozzleThroatMat = null;
 
     const f = craft.visuals;
     const comOffset = craft.dynamics.comHeightFromBase;
@@ -373,14 +456,18 @@ export class RocketVisual {
   private addOctawebDetail(stackGroup: THREE.Group): void {
     const inconelMat = new THREE.MeshStandardMaterial({
       color: 0x262a31,
-      roughness: 0.36,
-      metalness: 0.84,
+      roughness: 0.32,
+      metalness: 0.88,
+      envMapIntensity: 1.45,
     });
     const throatMat = new THREE.MeshStandardMaterial({
       color: 0x101216,
-      roughness: 0.65,
-      metalness: 0.7,
+      emissive: new THREE.Color(0xff6b1a),
+      emissiveIntensity: 0.0,
+      roughness: 0.58,
+      metalness: 0.72,
     });
+    this.nozzleThroatMat = throatMat;
 
     const bellGeo = new THREE.CylinderGeometry(0.24, 0.44, 0.92, 18, 1, true);
     const addBell = (x: number, z: number) => {
@@ -403,6 +490,7 @@ export class RocketVisual {
   }
 
   private enhanceMaterials(root: THREE.Object3D): void {
+    const micro = getAerospaceMicroMaps();
     root.traverse((obj) => {
       if (!(obj as THREE.Mesh).isMesh) return;
       const mesh = obj as THREE.Mesh;
@@ -418,19 +506,28 @@ export class RocketVisual {
         const std = (mat as THREE.MeshStandardMaterial).clone();
         const lum = std.color.r * 0.3 + std.color.g * 0.59 + std.color.b * 0.11;
         if (lum > 0.55) {
-          std.color.setRGB(0.91, 0.92, 0.935);
-          std.roughness = 0.3;
-          std.metalness = 0.14;
-          std.envMapIntensity = 1.15;
-        } else if (lum < 0.08) {
-          std.color.setRGB(0.08, 0.088, 0.1);
-          std.roughness = 0.44;
-          std.metalness = 0.36;
-          std.envMapIntensity = 1.1;
-        } else {
+          std.color.setRGB(0.92, 0.93, 0.945);
           std.roughness = 0.34;
-          std.metalness = 0.72;
-          std.envMapIntensity = 1.35;
+          std.metalness = 0.18;
+          std.roughnessMap = micro.fuselageRoughness;
+          if (!std.bumpMap) {
+            std.bumpMap = micro.fuselageBump;
+            std.bumpScale = 0.028;
+          }
+          std.envMapIntensity = 1.25;
+        } else if (lum < 0.08) {
+          std.color.setRGB(0.085, 0.092, 0.108);
+          std.roughness = 0.42;
+          std.metalness = 0.38;
+          if (!std.bumpMap) {
+            std.bumpMap = micro.carbonBump;
+            std.bumpScale = 0.022;
+          }
+          std.envMapIntensity = 1.2;
+        } else {
+          std.roughness = 0.3;
+          std.metalness = 0.82;
+          std.envMapIntensity = 1.45;
         }
         std.needsUpdate = true;
         mesh.material = std;
@@ -450,6 +547,12 @@ export class RocketVisual {
       rocket.quatECEF.z,
       rocket.quatECEF.w
     );
+
+    // Animate incandescent Merlin nozzle glow proportionally to live throttle
+    if (this.nozzleThroatMat) {
+      const thr = rocket.actualThrottle;
+      this.nozzleThroatMat.emissiveIntensity = thr > 0.01 ? 0.8 + thr * 4.5 : 0.0;
+    }
 
     // Animate deployable landing legs
     const t = rocket.gearDeployProgress;

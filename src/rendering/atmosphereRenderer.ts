@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import {
+  abs,
   cameraPosition,
   clamp,
   dot,
@@ -15,32 +16,27 @@ import {
   pow,
   smoothstep,
   sub,
-  texture,
-  time,
   uniform,
-  vec2,
   vec3,
 } from 'three/tsl';
 import { LoadedAssets } from '../assets/assetManager';
 import { PLANET_CONFIG } from '../config/planetConfig';
 import { Vec3d, subVec3 } from '../math/vec3d';
-import { CAPE_FRAME } from '../simulation/terrainHeight';
+import { CAPE_FRAME, curvatureDropM } from '../simulation/terrainHeight';
 
 /**
- * Physical atmospheric scattering & space transition renderer:
- * 1. Rayleigh + Henyey-Greenstein Mie sky dome calibrated to Earth's real 8.5 km scale height:
- *    - 0-12 km: Rich Florida coastal blue sky with warm luminous horizon & sun aureole
- *    - 20-45 km: Deep ink-indigo stratosphere zenith, crisp thin blue horizon band, emerging stars
- *    - 65-100+ km: Pitch-black outer space with thousands of crisp stars & glowing solar disc
+ * Physical atmospheric scattering, 3D volumetric-style cumulus clouds, & space transition renderer:
+ * 1. Rayleigh + Henyey-Greenstein Mie sky dome calibrated to Earth's atmospheric scale height.
  * 2. Planetary Rayleigh/Mie atmospheric limb halo hugging Earth's 6,371 km curved horizon.
- * 3. Realistic coastal Florida cloud deck (~2.85 km) sampling real NASA/SSS meteorological
- *    cloud maps (two drifting octaves) instead of blobby sine waves, fading smoothly into orbit.
- * 4. Sidereal-rotating 4,000-star celestial sphere.
+ * 3. True 3D multi-lobe Florida coastal cumulus cloud formations (zero flat 2D ceiling sheets!)
+ *    with soft Fresnel edge dissolution, warm sunlit crowns, cool shadowed undersides,
+ *    silver-lining forward scatter, and gentle coastal wind drift.
+ * 4. Sidereal-rotating 5,600-star celestial sphere with Milky Way band & spectral colors.
  */
 export class AtmosphereRenderer {
   public readonly skyDome: THREE.Mesh;
   public readonly atmoLimbMesh: THREE.Mesh;
-  public readonly localCloudDeck: THREE.Mesh;
+  public readonly localCloudDeck: THREE.Group;
   public readonly starField: THREE.Points;
 
   public readonly currentHorizonColor = new THREE.Color(0x95bee6);
@@ -48,14 +44,17 @@ export class AtmosphereRenderer {
 
   private readonly uSunDir = uniform(new THREE.Vector3(0.7, 0.4, 0.5));
   private readonly uLocalUp = uniform(new THREE.Vector3(0, 1, 0));
+  private readonly uHorizonColor = uniform(new THREE.Vector3(0.56, 0.74, 0.92));
   private readonly uRayleighScale = uniform(1.0);
   private readonly uMieScale = uniform(1.0);
   private readonly uDayFactor = uniform(1.0);
   private readonly uLimbStrength = uniform(0.0);
   private readonly uCloudFade = uniform(1.0);
   private readonly starMaterial: THREE.PointsMaterial;
+  private readonly cloudInstancedMesh: THREE.InstancedMesh;
+  private cloudDriftClock = 0;
 
-  constructor(assets: LoadedAssets) {
+  constructor(_assets: LoadedAssets) {
     // 1. Camera-centered Rayleigh + Mie sky dome
     const skyGeo = new THREE.SphereGeometry(1, 64, 48);
     this.skyDome = new THREE.Mesh(skyGeo, this.createPhysicalSkyMaterial());
@@ -68,10 +67,10 @@ export class AtmosphereRenderer {
     this.atmoLimbMesh.frustumCulled = false;
     this.atmoLimbMesh.renderOrder = 6;
 
-    // 3. Curved Florida coastal cumulus cloud canopy at 2.85 km altitude
-    this.localCloudDeck = this.buildLocalCloudDeck(assets);
-    this.localCloudDeck.frustumCulled = false;
-    this.localCloudDeck.renderOrder = 4;
+    // 3. True 3D volumetric-style coastal Florida cumulus cloud field (NO flat 2D cloud image sheet!)
+    const { group, instanced } = this.build3DCumulusCloudField();
+    this.localCloudDeck = group;
+    this.cloudInstancedMesh = instanced;
 
     // 4. Celestial starfield
     const { points, material } = this.createStarField();
@@ -97,11 +96,11 @@ export class AtmosphereRenderer {
     const sunCos = dot(dir, sunDir);
 
     // Optical air mass with true atmospheric pressure decay (uRayleighScale -> 0 in space!)
-    const airMassR = float(1.0).div(clampedElev.add(0.075)).mul(this.uRayleighScale);
-    const airMassM = float(1.0).div(clampedElev.add(0.042)).mul(this.uMieScale);
+    const airMassR = float(1.0).div(clampedElev.add(0.072)).mul(this.uRayleighScale);
+    const airMassM = float(1.0).div(clampedElev.add(0.038)).mul(this.uMieScale);
 
     // Wavelength-dependent Rayleigh extinction
-    const betaR = vec3(0.058, 0.138, 0.33);
+    const betaR = vec3(0.056, 0.136, 0.335);
     const transR = vec3(
       exp(betaR.x.negate().mul(airMassR)),
       exp(betaR.y.negate().mul(airMassR)),
@@ -109,39 +108,38 @@ export class AtmosphereRenderer {
     );
 
     const rayleighPhase = float(0.75).mul(float(1.0).add(sunCos.mul(sunCos)));
-    // Multiply explicitly by smooth atmospheric density envelope so sky goes PURE BLACK in space!
     const atmoPresence = smoothstep(float(0.002), float(0.18), this.uRayleighScale);
     const inScatterR = vec3(1.0)
       .sub(transR)
-      .mul(vec3(0.4, 0.72, 1.2))
+      .mul(vec3(0.39, 0.72, 1.24))
       .mul(rayleighPhase.mul(0.5).add(0.5))
       .mul(atmoPresence);
 
-    // Henyey-Greenstein Mie forward scatter (g = 0.76)
-    const g = float(0.76);
+    // Henyey-Greenstein Mie forward scatter (g = 0.78)
+    const g = float(0.78);
     const g2 = g.mul(g);
-    const denom = pow(max(float(0.04), float(1.0).add(g2).sub(g.mul(2.0).mul(sunCos))), float(1.5));
-    const miePhase = float(1.0).sub(g2).div(denom.mul(4.6));
+    const denom = pow(max(float(0.035), float(1.0).add(g2).sub(g.mul(2.0).mul(sunCos))), float(1.5));
+    const miePhase = float(1.0).sub(g2).div(denom.mul(4.8));
 
-    const mieAmount = float(1.0).sub(exp(airMassM.mul(-0.18))).mul(this.uMieScale);
-    const sunWarmth = smoothstep(float(0.4), float(-0.04), sunElev);
-    const mieTint = mix(vec3(0.92, 0.95, 1.0), vec3(1.0, 0.6, 0.3), sunWarmth);
-    const inScatterM = mieTint.mul(mieAmount.mul(0.52).add(miePhase.mul(0.14).mul(this.uMieScale)));
+    const mieAmount = float(1.0).sub(exp(airMassM.mul(-0.19))).mul(this.uMieScale);
+    const sunWarmth = smoothstep(float(0.42), float(-0.04), sunElev);
+    const mieTint = mix(vec3(0.93, 0.96, 1.0), vec3(1.0, 0.58, 0.28), sunWarmth);
+    const inScatterM = mieTint.mul(mieAmount.mul(0.5).add(miePhase.mul(0.15).mul(this.uMieScale)));
 
-    // Horizon aerial glow band (tightens into a razor-thin electric blue rim in the stratosphere!)
-    const horizonTightness = mix(float(28.0), float(7.5), this.uRayleighScale);
-    const horizonGlow = exp(clampedElev.mul(horizonTightness.negate())).mul(this.uRayleighScale).mul(0.45);
-    const horizonTint = mix(vec3(0.42, 0.72, 1.0), vec3(0.98, 0.58, 0.32), sunWarmth);
+    // Crisp horizon aerial glow band (tightens into a razor-thin electric blue rim in the stratosphere!)
+    const horizonTightness = mix(float(30.0), float(7.2), this.uRayleighScale);
+    const horizonGlow = exp(clampedElev.mul(horizonTightness.negate())).mul(this.uRayleighScale).mul(0.46);
+    const horizonTint = mix(vec3(0.44, 0.74, 1.0), vec3(0.98, 0.56, 0.3), sunWarmth);
 
     const daySky = inScatterR.add(inScatterM).add(horizonTint.mul(horizonGlow)).mul(this.uDayFactor);
 
-    // Crisp sun disc & subtle solar corona visible even in black vacuum of space
-    const sunCore = pow(max(sunCos, float(0.0)), float(1200.0)).mul(7.0);
-    const sunCorona = pow(max(sunCos, float(0.0)), float(90.0)).mul(0.18);
+    // Crisp solar disc & soft corona visible even in deep black vacuum of space
+    const sunCore = pow(max(sunCos, float(0.0)), float(1500.0)).mul(8.0);
+    const sunCorona = pow(max(sunCos, float(0.0)), float(95.0)).mul(0.2);
     const sunDisc = vec3(1.0, 0.96, 0.88).mul(sunCore.add(sunCorona));
 
     const belowFade = smoothstep(float(-0.08), float(0.015), elev);
-    const deepSpace = vec3(0.0008, 0.0012, 0.0028);
+    const deepSpace = vec3(0.0007, 0.001, 0.0024);
     const finalSky = mix(deepSpace, daySky, belowFade).add(sunDisc);
 
     mat.colorNode = finalSky;
@@ -159,11 +157,9 @@ export class AtmosphereRenderer {
     const sunDir = normalize(this.uSunDir);
     const viewDir = normalize(sub(cameraPosition, positionWorld));
 
-    // On a BackSide outer atmosphere shell, dot(-nWorld, viewDir) is 0.0 at the outer vacuum edge
-    // and increases inward toward Earth's horizon. Feathering to 0 at cosV=0 removes the hard white band!
     const cosV = clamp(dot(nWorld.negate(), viewDir), float(0.0), float(1.0));
-    const outerFeather = pow(cosV, float(2.6));
-    const horizonPeak = smoothstep(float(0.0), float(0.45), cosV);
+    const outerFeather = pow(cosV, float(2.5));
+    const horizonPeak = smoothstep(float(0.0), float(0.42), cosV);
     const limbGlow = outerFeather.mul(horizonPeak);
 
     const ndotl = dot(nWorld, sunDir);
@@ -171,113 +167,165 @@ export class AtmosphereRenderer {
     const terminator = smoothstep(float(-0.2), float(0.0), ndotl)
       .mul(float(1.0).sub(smoothstep(float(0.0), float(0.22), ndotl)));
 
-    const deepBlue = vec3(0.07, 0.28, 0.88);
-    const horizonCyan = vec3(0.26, 0.62, 1.0);
-    const sunsetOrange = vec3(0.92, 0.34, 0.12);
+    const deepBlue = vec3(0.06, 0.27, 0.9);
+    const horizonCyan = vec3(0.28, 0.65, 1.0);
+    const sunsetOrange = vec3(0.95, 0.35, 0.12);
 
-    const scatter = mix(deepBlue, horizonCyan, smoothstep(float(0.1), float(0.75), cosV))
+    const scatter = mix(deepBlue, horizonCyan, smoothstep(float(0.08), float(0.72), cosV))
       .mul(limbGlow)
-      .add(sunsetOrange.mul(terminator).mul(limbGlow).mul(0.65));
+      .add(sunsetOrange.mul(terminator).mul(limbGlow).mul(0.7));
 
-    mat.colorNode = scatter.mul(sunLit).mul(1.05).mul(this.uLimbStrength);
-    mat.opacityNode = clamp(limbGlow.mul(sunLit).mul(0.85).mul(this.uLimbStrength), float(0.0), float(0.85));
+    mat.colorNode = scatter.mul(sunLit).mul(1.12).mul(this.uLimbStrength);
+    mat.opacityNode = clamp(limbGlow.mul(sunLit).mul(0.88).mul(this.uLimbStrength), float(0.0), float(0.88));
     return mat;
   }
 
-  private buildLocalCloudDeck(assets: LoadedAssets): THREE.Mesh {
-    const radius = 125_000;
-    const rings = 44;
-    const sectors = 64;
-    const positions: number[] = [];
-    const uvs: number[] = [];
-    const indices: number[] = [];
+  /**
+   * Generates a sculpted bumpy 3D cloud puff geometry with a slightly flattened condensation base.
+   */
+  private createSculptedCloudLobeGeometry(): THREE.BufferGeometry {
+    const geo = new THREE.IcosahedronGeometry(1.0, 2);
+    const pos = geo.attributes.position;
+    const v = new THREE.Vector3();
 
-    const cloudAltM = 2850;
-    positions.push(0, cloudAltM, 0);
-    uvs.push(0.5, 0.5);
-
-    for (let r = 1; r <= rings; r++) {
-      const t = r / rings;
-      const rad = Math.pow(t, 1.85) * radius;
-      const drop = (rad * rad) / (2 * PLANET_CONFIG.meanRadiusM);
-      for (let s = 0; s < sectors; s++) {
-        const theta = (s / sectors) * Math.PI * 2;
-        const x = Math.cos(theta) * rad;
-        const z = Math.sin(theta) * rad;
-        positions.push(x, cloudAltM - drop, z);
-        uvs.push(0.5 + x / (radius * 2), 0.5 - z / (radius * 2));
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      // Organic multi-frequency billow displacement
+      const bump =
+        1.0 +
+        0.16 * Math.sin(v.x * 3.7 + v.y * 2.9) +
+        0.12 * Math.cos(v.z * 4.3 - v.x * 3.1) +
+        0.08 * Math.sin(v.y * 5.2 + v.z * 4.1);
+      v.multiplyScalar(bump);
+      // Flatten cloud underside like real cumulus condensation level
+      if (v.y < 0) {
+        v.y *= 0.48;
+      } else {
+        v.y *= 0.88;
       }
+      pos.setXYZ(i, v.x, v.y, v.z);
     }
 
-    for (let s = 0; s < sectors; s++) {
-      indices.push(0, 1 + ((s + 1) % sectors), 1 + s);
-    }
-    for (let r = 1; r < rings; r++) {
-      const a0 = 1 + (r - 1) * sectors;
-      const b0 = 1 + r * sectors;
-      for (let s = 0; s < sectors; s++) {
-        const n = (s + 1) % sectors;
-        indices.push(a0 + s, a0 + n, b0 + n, a0 + s, b0 + n, b0 + s);
-      }
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setIndex(indices);
     geo.computeVertexNormals();
+    return geo;
+  }
 
-    const mat = new THREE.MeshBasicNodeMaterial();
-    mat.transparent = true;
-    mat.depthWrite = false;
-    mat.side = THREE.DoubleSide;
-
-    const pLocal = positionLocal;
-    const pWorld = positionWorld;
-    const sunDir = normalize(this.uSunDir);
-
-    // Sample genuine meteorological NASA/SSS cloud texture in two drifting scales
-    const drift1 = vec2(time.mul(0.00018), time.mul(0.00007));
-    const drift2 = vec2(time.mul(-0.00011), time.mul(0.00014));
-    const uv1 = vec2(pLocal.x.div(78000.0).add(0.22), pLocal.z.div(78000.0).add(0.41)).add(drift1);
-    const uv2 = vec2(pLocal.x.div(34000.0).add(0.67), pLocal.z.div(34000.0).add(0.18)).add(drift2);
-
-    const c1 = assets.earthCloudsMap ? texture(assets.earthCloudsMap, uv1).r : float(0.0);
-    const c2 = assets.earthCloudsMap ? texture(assets.earthCloudsMap, uv2).r : float(0.0);
-    const combined = c1.mul(0.65).add(c2.mul(0.35));
-
-    // Keep launch corridor partly open (Florida fair-weather scattered cumulus)
-    const cloudAlpha = smoothstep(float(0.34), float(0.76), combined);
-
-    const viewDir = normalize(sub(pWorld, cameraPosition));
-    const forwardScatter = pow(max(dot(viewDir, sunDir), float(0.0)), float(6.0)).mul(0.28);
-
-    const cloudShadow = vec3(0.64, 0.72, 0.82);
-    const cloudSunlit = vec3(0.99, 0.98, 0.96);
-    const cloudColor = mix(cloudShadow, cloudSunlit, smoothstep(float(0.15), float(0.82), cloudAlpha).mul(0.65).add(0.3))
-      .add(vec3(1.0, 0.95, 0.85).mul(forwardScatter))
-      .mul(this.uDayFactor.mul(0.92).add(0.06));
-
-    const radialDist = length(vec2(pLocal.x, pLocal.z));
-    const outerFade = float(1.0).sub(smoothstep(float(48000.0), float(122000.0), radialDist));
-    const camDist = length(sub(cameraPosition, pWorld));
-    const closeSoftFade = smoothstep(float(220.0), float(1600.0), camDist);
-
-    mat.colorNode = cloudColor;
-    mat.opacityNode = cloudAlpha.mul(outerFade).mul(closeSoftFade).mul(this.uCloudFade).mul(0.62);
-
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.quaternion.set(
+  /**
+   * Builds a true 3D Florida coastal cumulus cloud field (instanced multi-lobe volumetric formations).
+   */
+  private build3DCumulusCloudField(): { group: THREE.Group; instanced: THREE.InstancedMesh } {
+    const group = new THREE.Group();
+    group.name = 'Coastal3DCumulusField';
+    group.quaternion.set(
       CAPE_FRAME.localToECEF.x,
       CAPE_FRAME.localToECEF.y,
       CAPE_FRAME.localToECEF.z,
       CAPE_FRAME.localToECEF.w
     );
-    return mesh;
+
+    const lobeGeo = this.createSculptedCloudLobeGeometry();
+    const mat = new THREE.MeshBasicNodeMaterial();
+    mat.transparent = true;
+    mat.depthWrite = false;
+
+    const nWorld = normalize(normalWorld);
+    const pWorld = positionWorld;
+    const sunDir = normalize(this.uSunDir);
+    const up = normalize(this.uLocalUp);
+    const viewDir = normalize(sub(cameraPosition, pWorld));
+    const camDist = length(sub(cameraPosition, pWorld));
+
+    // Soft volumetric Fresnel edge dissolution so overlapping 3D lobes blend like real vapor
+    const facing = clamp(abs(dot(nWorld, viewDir)), float(0.001), float(1.0));
+    const softVolume = pow(facing, float(1.45));
+
+    // Dual-tone cumulus shading: warm sunlit crown + cool blue-slate shadowed cloud belly
+    const sunN = dot(nWorld, sunDir).mul(0.5).add(0.5);
+    const upN = dot(nWorld, up).mul(0.5).add(0.5);
+    const lightMix = clamp(sunN.mul(0.68).add(upN.mul(0.32)), float(0.0), float(1.0));
+
+    // Silver-lining Henyey-Greenstein forward scattering when viewing clouds near the Sun
+    const lookSun = max(dot(viewDir.negate(), sunDir), float(0.0));
+    const silverLining = pow(lookSun, float(7.0))
+      .mul(float(1.0).sub(facing).mul(0.75).add(0.25))
+      .mul(0.42);
+
+    const shadowTint = vec3(0.54, 0.63, 0.76);
+    const sunlitTint = vec3(0.99, 0.98, 0.96);
+    const cloudBody = mix(shadowTint, sunlitTint, smoothstep(float(0.18), float(0.86), lightMix))
+      .add(vec3(1.0, 0.94, 0.84).mul(silverLining))
+      .mul(this.uDayFactor.mul(0.94).add(0.04));
+
+    // Distance aerial perspective haze so far horizon cumulus dissolve naturally into the sky
+    const haze = float(1.0).sub(exp(camDist.mul(-0.000022))).mul(0.72);
+    const finalCloudCol = mix(cloudBody, this.uHorizonColor, clamp(haze, float(0.0), float(0.82)));
+
+    // Gentle fade right at camera clip distance so flying directly through a cloud feels silky
+    const closeSoftFade = smoothstep(float(180.0), float(1100.0), camDist);
+    const farFade = float(1.0).sub(smoothstep(float(36000.0), float(64000.0), camDist));
+
+    mat.colorNode = finalCloudCol;
+    mat.opacityNode = clamp(
+      softVolume.mul(closeSoftFade).mul(farFade).mul(this.uCloudFade).mul(0.82),
+      float(0.0),
+      float(0.86)
+    );
+
+    // Scatter 46 distinct multi-lobe fair-weather Florida cumulus formations (~280 total lobes)
+    const maxLobes = 320;
+    const instanced = new THREE.InstancedMesh(lobeGeo, mat, maxLobes);
+    instanced.frustumCulled = false;
+    instanced.renderOrder = 4;
+
+    let seed = 882731;
+    const rand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+
+    const dummy = new THREE.Object3D();
+    let idx = 0;
+    const cloudCount = 48;
+
+    for (let c = 0; c < cloudCount && idx < maxLobes - 8; c++) {
+      // Keep direct zenith over SLC-40 partly open for clear sunlight while surrounding sky & ocean
+      const angle = rand() * Math.PI * 2;
+      const dist = 3_200 + Math.pow(rand(), 0.72) * 44_000;
+      const cx = Math.cos(angle) * dist;
+      const cz = Math.sin(angle) * dist;
+      const baseAlt = 1_850 + rand() * 2_200 - curvatureDropM(cx, cz);
+
+      const lobesInCloud = 5 + Math.floor(rand() * 4);
+      const formationScale = 340 + rand() * 580;
+
+      for (let l = 0; l < lobesInCloud && idx < maxLobes; l++) {
+        const isTower = l === 0;
+        const offAng = (l / lobesInCloud) * Math.PI * 2 + rand() * 0.6;
+        const offRad = isTower ? 0 : formationScale * (0.45 + rand() * 0.72);
+        const lx = cx + Math.cos(offAng) * offRad;
+        const lz = cz + Math.sin(offAng) * offRad;
+        const ly = baseAlt + (isTower ? formationScale * 0.24 : (rand() - 0.25) * formationScale * 0.28);
+
+        const sx = formationScale * (isTower ? 0.92 : 0.52 + rand() * 0.45);
+        const sy = formationScale * (isTower ? 0.68 : 0.34 + rand() * 0.32);
+        const sz = formationScale * (isTower ? 0.88 : 0.48 + rand() * 0.45);
+
+        dummy.position.set(lx, ly, lz);
+        dummy.rotation.set(0, rand() * Math.PI * 2, 0);
+        dummy.scale.set(sx, sy, sz);
+        dummy.updateMatrix();
+        instanced.setMatrixAt(idx++, dummy.matrix);
+      }
+    }
+
+    instanced.count = idx;
+    instanced.instanceMatrix.needsUpdate = true;
+    group.add(instanced);
+    return { group, instanced };
   }
 
   private createStarField(): { points: THREE.Points; material: THREE.PointsMaterial } {
-    const starCount = 4200;
+    const starCount = 5600;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
 
@@ -287,24 +335,42 @@ export class AtmosphereRenderer {
       return seed / 4294967296;
     };
 
+    // Authentic stellar spectral classes (O/B blue-white -> A/F white -> G warm -> K/M amber)
     const starPalette = [
-      [0.78, 0.88, 1.0],
-      [0.96, 0.97, 1.0],
+      [0.72, 0.86, 1.0],
+      [0.88, 0.94, 1.0],
+      [0.98, 0.98, 1.0],
       [1.0, 0.95, 0.84],
-      [1.0, 0.82, 0.64],
+      [1.0, 0.82, 0.62],
     ];
 
     for (let i = 0; i < starCount; i++) {
-      const u = rand() * 2 - 1;
+      // 35% of stars gently concentrated along a tilted Milky Way galactic plane
+      const inBand = i < starCount * 0.35;
+      const u = inBand ? (rand() + rand() - 1) * 0.22 : rand() * 2 - 1;
       const phi = rand() * Math.PI * 2;
-      const r = Math.sqrt(1 - u * u);
+      const r = Math.sqrt(Math.max(0, 1 - u * u));
 
-      positions[i * 3] = r * Math.cos(phi);
-      positions[i * 3 + 1] = u;
-      positions[i * 3 + 2] = r * Math.sin(phi);
+      let x = r * Math.cos(phi);
+      let y = u;
+      let z = r * Math.sin(phi);
 
-      const mag = Math.pow(rand(), 2.1);
-      const brightness = 0.28 + 0.72 * mag;
+      if (inBand) {
+        // Tilt galactic band ~58 degrees
+        const c = Math.cos(1.01);
+        const s = Math.sin(1.01);
+        const ny = y * c - z * s;
+        const nz = y * s + z * c;
+        y = ny;
+        z = nz;
+      }
+
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = z;
+
+      const mag = Math.pow(rand(), inBand ? 2.7 : 2.2);
+      const brightness = (inBand ? 0.16 : 0.24) + 0.76 * mag;
       const tint = starPalette[Math.floor(rand() * starPalette.length)];
 
       colors[i * 3] = tint[0] * brightness;
@@ -317,7 +383,7 @@ export class AtmosphereRenderer {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const material = new THREE.PointsMaterial({
-      size: 2.0,
+      size: 1.85,
       sizeAttenuation: false,
       vertexColors: true,
       transparent: true,
@@ -335,7 +401,8 @@ export class AtmosphereRenderer {
     sunDirECEF: Vec3d,
     cameraAltitudeM: number,
     earthRotationRad: number,
-    cameraFar: number
+    cameraFar: number,
+    dt = 0
   ): void {
     const skyRadius = Math.max(5000, cameraFar * 0.56);
     this.skyDome.scale.setScalar(skyRadius);
@@ -349,10 +416,6 @@ export class AtmosphereRenderer {
     this.uLocalUp.value.set(upX, upY, upZ);
     this.uSunDir.value.set(sunDirECEF.x, sunDirECEF.y, sunDirECEF.z).normalize();
 
-    // Daytime-calibrated atmospheric transition:
-    // - 0-15 km: rich bright Florida coastal blue sky & soft horizon haze
-    // - 20-45 km: realistic deep royal/cobalt stratosphere (NOT prematurely black at 28 km!)
-    // - 55-90+ km: smooth continuous transition into pitch-black star-filled space
     const alt = Math.max(0, cameraAltitudeM);
     const rayleighFactor = Math.exp(-alt / 13_800);
     const mieFactor = Math.exp(-alt / 4_400);
@@ -374,18 +437,32 @@ export class AtmosphereRenderer {
       0.19 * rayleighFactor * dayFactor,
       0.52 * rayleighFactor * dayFactor
     );
+    this.uHorizonColor.value.set(
+      this.currentHorizonColor.r,
+      this.currentHorizonColor.g,
+      this.currentHorizonColor.b
+    );
 
-    // Planetary atmospheric limb halo fades in smoothly above 24 km
+    // Planetary atmospheric limb halo fades in smoothly above 22 km
     this.atmoLimbMesh.position.set(-cameraPosECEF.x, -cameraPosECEF.y, -cameraPosECEF.z);
     this.uLimbStrength.value = Math.max(0, Math.min(1, (alt - 22_000) / 48_000));
 
-    // Coastal cumulus cloud canopy fades smoothly into 8K planetary cloud shell between 18 km and 40 km
+    // Position 3D coastal cumulus field over Cape Canaveral with gentle trade-wind drift
+    this.cloudDriftClock += dt;
+    const driftEastM = Math.sin(this.cloudDriftClock * 0.002) * 350;
     const capeRel = subVec3(CAPE_FRAME.originECEF, cameraPosECEF);
-    this.localCloudDeck.position.set(capeRel.x, capeRel.y, capeRel.z);
-    const cloudAltFade = 1 - Math.max(0, Math.min(1, (alt - 18_000) / 24_000));
-    this.uCloudFade.value = cloudAltFade;
+    this.localCloudDeck.position.set(
+      capeRel.x + CAPE_FRAME.east.x * driftEastM,
+      capeRel.y + CAPE_FRAME.east.y * driftEastM,
+      capeRel.z + CAPE_FRAME.east.z * driftEastM
+    );
 
-    // Stars stay suppressed against bright daytime skies (<= 35 km) and emerge smoothly between 38-80 km or at night
+    const cloudAltFade = 1 - Math.max(0, Math.min(1, (alt - 16_000) / 20_000));
+    this.uCloudFade.value = cloudAltFade;
+    const distFromCape = Math.hypot(capeRel.x, capeRel.y, capeRel.z);
+    this.cloudInstancedMesh.visible = cloudAltFade > 0.01 && distFromCape < 120_000;
+
+    // Stars stay suppressed against bright daytime skies (<= 35 km) and emerge cleanly into space
     this.starField.position.set(0, 0, 0);
     this.starField.scale.setScalar(skyRadius * 0.96);
     this.starField.rotation.y = -earthRotationRad;

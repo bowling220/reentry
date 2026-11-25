@@ -32,6 +32,7 @@ export class CapeCanaveralScene {
   private readonly localStructuresGroup: THREE.Group;
   private readonly beaconMat: THREE.MeshBasicMaterial;
   private readonly textures: FacilityTextures;
+  private readonly cryoVentPuffs: { mesh: THREE.Mesh; basePos: THREE.Vector3; phase: number; speed: number }[] = [];
   private beaconClock = 0;
 
   constructor(assets: LoadedAssets) {
@@ -45,7 +46,7 @@ export class CapeCanaveralScene {
       CAPE_FRAME.localToECEF.w
     );
 
-    // 1. Real-world USGS Cape Canaveral terrain & non-repetitive TSL Atlantic Ocean
+    // 1. Fully procedural PBR Cape Canaveral terrain & realistic Atlantic surf ocean
     this.terrainOcean = new CapeTerrainOcean(assets);
     this.group.add(this.terrainOcean.group);
 
@@ -60,9 +61,11 @@ export class CapeCanaveralScene {
     this.buildLatticeLightningTowers(this.localStructuresGroup);
     this.buildPropellantTankFarm(this.localStructuresGroup);
     this.buildIndustrialFacilities(this.localStructuresGroup);
+    this.buildPadMicroDetails(this.localStructuresGroup);
     this.buildRoadsAndParking(this.localStructuresGroup);
     this.buildLandingPadLZ1(this.localStructuresGroup);
     this.buildFloridaCoastalVegetation(this.localStructuresGroup);
+    this.buildCryoVentVapor(this.localStructuresGroup);
 
     this.group.add(this.localStructuresGroup);
   }
@@ -706,6 +709,148 @@ export class CapeCanaveralScene {
     parent.add(bunkerRoof);
   }
 
+  /**
+   * Adds authentic SLC-40 ground-level aerospace micro-realism:
+   * - Stadium floodlight stanchions around the concrete pad perimeter
+   * - Elevated steel cryogenic pipe trestles connecting LOX farm to launch mount
+   * - Telemetry tracking radome & dish near the support bunker
+   * - Concrete Jersey safety barriers along the rollout ramp
+   */
+  private buildPadMicroDetails(parent: THREE.Group): void {
+    const steelMat = new THREE.MeshStandardMaterial({
+      color: 0x626b75,
+      roughness: 0.48,
+      metalness: 0.72,
+    });
+    const lampGlowMat = new THREE.MeshBasicMaterial({ color: 0xfff1d4 });
+    const barrierMat = new THREE.MeshStandardMaterial({
+      map: this.textures.concreteAlbedo,
+      roughness: 0.92,
+      metalness: 0.04,
+    });
+    const radomeMat = new THREE.MeshStandardMaterial({
+      color: 0xe8edf2,
+      roughness: 0.36,
+      metalness: 0.12,
+    });
+
+    // 1. Four stadium floodlight masts flanking the launchpad apron
+    const floodPositions: [number, number][] = [
+      [38, 28],
+      [-38, 30],
+      [38, -30],
+      [-36, -34],
+    ];
+    for (const [fx, fz] of floodPositions) {
+      const gy = getCapeTerrainElevationM(fx, fz) - curvatureDropM(fx, fz);
+      const mast = new THREE.Group();
+      mast.position.set(fx, gy, fz);
+      mast.rotation.y = Math.atan2(-fx, -fz);
+
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.28, 24, 8), steelMat);
+      pole.position.y = 12;
+      pole.castShadow = true;
+      mast.add(pole);
+
+      const crossbar = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.35, 0.35), steelMat);
+      crossbar.position.set(0, 23.6, 0);
+      mast.add(crossbar);
+
+      for (let k = -1.6; k <= 1.61; k += 0.8) {
+        const housing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.42, 0.45), steelMat);
+        housing.position.set(k, 24.0, 0.18);
+        housing.rotation.x = 0.42;
+        mast.add(housing);
+
+        const lens = new THREE.Mesh(new THREE.PlaneGeometry(0.46, 0.34), lampGlowMat);
+        lens.position.set(k, 23.92, 0.42);
+        lens.rotation.x = 0.42;
+        mast.add(lens);
+      }
+
+      parent.add(mast);
+    }
+
+    // 2. Elevated cryogenic pipe trestle bridges connecting LOX spheres to the launchpad
+    for (let i = 0; i < 6; i++) {
+      const t = i / 5;
+      const px = -78 + t * 44;
+      const pz = -58 + t * 42;
+      const gy = getCapeTerrainElevationM(px, pz) - curvatureDropM(px, pz);
+      const stanchion = new THREE.Mesh(new THREE.BoxGeometry(0.32, 3.6, 2.4), steelMat);
+      stanchion.position.set(px, gy + 1.8, pz);
+      stanchion.rotation.y = -0.78;
+      stanchion.castShadow = true;
+      parent.add(stanchion);
+    }
+
+    // 3. White geodesic telemetry tracking radome beside Launch Control Support Bunker
+    const rx = -132, rz = 88;
+    const ry = getCapeTerrainElevationM(rx, rz) - curvatureDropM(rx, rz);
+    const radomeBase = new THREE.Mesh(new THREE.CylinderGeometry(3.8, 4.4, 5.2, 16), barrierMat);
+    radomeBase.position.set(rx, ry + 2.6, rz);
+    radomeBase.castShadow = true;
+    parent.add(radomeBase);
+
+    const radomeBall = new THREE.Mesh(new THREE.IcosahedronGeometry(4.6, 2), radomeMat);
+    radomeBall.position.set(rx, ry + 8.6, rz);
+    radomeBall.castShadow = true;
+    parent.add(radomeBall);
+
+    // 4. Concrete Jersey safety barriers lining both sides of the rollout ramp
+    const barrierGeo = new THREE.BoxGeometry(0.75, 1.05, 4.8);
+    for (const side of [-1, 1]) {
+      for (let k = 0; k < 5; k++) {
+        const bx = -8 + side * 8.6 - k * 1.1;
+        const bz = 34 + k * 6.2;
+        const by = getCapeTerrainElevationM(bx, bz) - curvatureDropM(bx, bz);
+        const b = new THREE.Mesh(barrierGeo, barrierMat);
+        b.position.set(bx, by + 0.52, bz);
+        b.rotation.y = -0.22;
+        b.castShadow = true;
+        b.receiveShadow = true;
+        parent.add(b);
+      }
+    }
+  }
+
+  /**
+   * Subtle animated 3D cryogenic LOX boil-off vapor drifting from the Strongback umbilical
+   * and LOX storage tanks (pure 3D shaded geometry, zero flat billboard image cards!).
+   */
+  private buildCryoVentVapor(parent: THREE.Group): void {
+    const puffGeo = new THREE.IcosahedronGeometry(1.0, 1);
+    const puffMat = new THREE.MeshStandardMaterial({
+      color: 0xeef4fa,
+      roughness: 0.98,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+    });
+
+    const vents: THREE.Vector3[] = [
+      new THREE.Vector3(-4.2, LAUNCH_MOUNT_TOP_Y + 49.5, 0.2), // Strongback upper LOX vent
+      new THREE.Vector3(-4.8, LAUNCH_MOUNT_TOP_Y + 32.0, -0.4), // Mid-stage umbilical vent
+      new THREE.Vector3(-86, getCapeTerrainElevationM(-86, -68) + 23.0, -68), // LOX sphere flare
+    ];
+
+    for (const origin of vents) {
+      for (let i = 0; i < 6; i++) {
+        const mesh = new THREE.Mesh(puffGeo, puffMat);
+        mesh.position.copy(origin);
+        mesh.renderOrder = 16;
+        parent.add(mesh);
+        this.cryoVentPuffs.push({
+          mesh,
+          basePos: origin.clone(),
+          phase: i / 6,
+          speed: 0.18 + (i % 3) * 0.04,
+        });
+      }
+    }
+  }
+
   private buildRoadsAndParking(parent: THREE.Group): void {
     const roadTex = this.textures.asphaltAlbedo.clone();
     roadTex.repeat.set(14, 1);
@@ -805,42 +950,146 @@ export class CapeCanaveralScene {
     parent.add(lzGroup);
   }
 
-  private buildFloridaCoastalVegetation(parent: THREE.Group): void {
-    // 1. Authentic Florida Coastal Sabal Palm Trees (curved trunks + multi-frond alpha-cutout crowns)
-    const palmCount = 190;
-    const trunkGeo = new THREE.CylinderGeometry(0.18, 0.34, 7.2, 7);
-    const trunkMat = new THREE.MeshStandardMaterial({
-      color: 0x6b5d4d,
-      roughness: 0.95,
-    });
+  /**
+   * Builds a true sculpted 3D arched Florida Sabal palm frond (curved central rachis +
+   * angled 3D tapered leaflets with vertex color sun-to-shade gradient — ZERO 2D image cards!).
+   */
+  private create3DPalmFrondGeometry(): THREE.BufferGeometry {
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const indices: number[] = [];
 
-    // Single crown geometry composed of 6 arched feathery palm fronds using palmFrondTex
-    const frondMat = new THREE.MeshStandardMaterial({
-      map: this.textures.palmFrondTex,
-      alphaTest: 0.32,
-      side: THREE.DoubleSide,
-      roughness: 0.78,
+    const segs = 12;
+    const frondLen = 3.6;
+
+    const pushVert = (x: number, y: number, z: number, r: number, g: number, b: number) => {
+      positions.push(x, y, z);
+      colors.push(r, g, b);
+      return positions.length / 3 - 1;
+    };
+
+    for (let i = 0; i < segs; i++) {
+      const t0 = i / segs;
+      const t1 = (i + 1) / segs;
+      const tm = (t0 + t1) * 0.5;
+
+      // Graceful parabolic downward arch along +Z
+      const z0 = t0 * frondLen;
+      const z1 = t1 * frondLen;
+      const y0 = Math.sin(t0 * Math.PI * 0.72) * 0.78 - t0 * t0 * 1.15;
+      const y1 = Math.sin(t1 * Math.PI * 0.72) * 0.78 - t1 * t1 * 1.15;
+      const span = Math.sin(Math.pow(tm, 0.85) * Math.PI) * 1.18 + 0.14;
+
+      // Rich organic Florida palm green (deeper olive near crown -> brighter sunlit sage toward tips)
+      const rStem = 0.22 + tm * 0.1;
+      const gStem = 0.34 + tm * 0.14;
+      const bStem = 0.13 + tm * 0.06;
+
+      const rTip = 0.3 + tm * 0.12;
+      const gTip = 0.46 + tm * 0.14;
+      const bTip = 0.16 + tm * 0.06;
+
+      const c0 = pushVert(0, y0, z0, rStem, gStem, bStem);
+      const c1 = pushVert(0, y1, z1, rStem, gStem, bStem);
+
+      // Left & right drooping 3D leaflet blades with natural V-dihedral angle
+      for (const side of [-1, 1]) {
+        const tipX = side * span;
+        const tipY = (y0 + y1) * 0.5 - span * 0.32;
+        const tipZ = (z0 + z1) * 0.5 + 0.22;
+        const tip = pushVert(tipX, tipY, tipZ, rTip, gTip, bTip);
+        if (side > 0) {
+          indices.push(c0, c1, tip);
+        } else {
+          indices.push(c0, tip, c1);
+        }
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  /**
+   * Builds a curved, ringed 3D Sabal palm trunk geometry.
+   */
+  private createCurvedPalmTrunkGeometry(): THREE.BufferGeometry {
+    const geo = new THREE.CylinderGeometry(0.16, 0.34, 7.6, 8, 10);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i);
+      const t = (y + 3.8) / 7.6; // 0 at base -> 1 at crown
+      // Natural wind-swept coastal curve + subtle horizontal bark ring ridges
+      const bend = Math.sin(t * Math.PI * 0.85) * 0.65;
+      const ringBump = 1 + 0.055 * Math.sin(t * 28.0);
+      pos.setXYZ(i, pos.getX(i) * ringBump + bend, y, pos.getZ(i) * ringBump);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  /**
+   * Builds an organic displaced 3D coastal saw-palmetto / sea-grape foliage clump.
+   */
+  private createOrganicScrubGeometry(): THREE.BufferGeometry {
+    const geo = new THREE.IcosahedronGeometry(2.5, 2);
+    const pos = geo.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      const n =
+        1.0 +
+        0.26 * Math.sin(v.x * 2.4 + v.z * 2.1) +
+        0.18 * Math.cos(v.y * 3.2 - v.x * 2.9);
+      v.multiplyScalar(n);
+      v.x *= 1.45;
+      v.y *= v.y < 0 ? 0.3 : 0.62;
+      v.z *= 1.35;
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  private buildFloridaCoastalVegetation(parent: THREE.Group): void {
+    // 1. Authentic 3D Florida Coastal Sabal Palm Trees (curved ringed trunks + 9 real 3D arched fronds each!)
+    const palmCount = 240;
+    const frondsPerPalm = 9;
+    const trunkGeo = this.createCurvedPalmTrunkGeometry();
+    const trunkMat = new THREE.MeshStandardMaterial({
+      color: 0x6f6253,
+      roughness: 0.94,
       metalness: 0.02,
     });
 
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palmCount);
-    const fronds = new THREE.InstancedMesh(
-      new THREE.PlaneGeometry(4.4, 4.4),
-      frondMat,
-      palmCount * 6
-    );
-    trunks.castShadow = true;
+    const frondGeo = this.create3DPalmFrondGeometry();
+    const frondMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      roughness: 0.72,
+      metalness: 0.03,
+    });
 
-    // 2. Low coastal Saw Palmetto & sea-grape scrub clusters (flat irregular ground cover, NOT lollipops)
-    const scrubCount = 340;
-    const scrubGeo = new THREE.IcosahedronGeometry(2.6, 1);
-    scrubGeo.scale(1.5, 0.52, 1.35);
+    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, palmCount);
+    const fronds = new THREE.InstancedMesh(frondGeo, frondMat, palmCount * frondsPerPalm);
+    trunks.castShadow = true;
+    trunks.receiveShadow = true;
+    fronds.castShadow = true;
+
+    // 2. Dense organic 3D coastal Saw Palmetto & sea-grape scrub clusters with per-instance color variation
+    const scrubCount = 520;
+    const scrubGeo = this.createOrganicScrubGeometry();
     const scrubMat = new THREE.MeshStandardMaterial({
-      color: 0x2e4126,
-      roughness: 0.94,
+      color: 0xffffff,
+      roughness: 0.93,
       metalness: 0.0,
     });
     const scrubs = new THREE.InstancedMesh(scrubGeo, scrubMat, scrubCount);
+    scrubs.castShadow = true;
     scrubs.receiveShadow = true;
 
     let seed = 440192;
@@ -850,16 +1099,17 @@ export class CapeCanaveralScene {
     };
 
     const dummy = new THREE.Object3D();
+    const colorTmp = new THREE.Color();
     const isClearZone = (x: number, z: number) => {
-      if (Math.hypot(x, z) < 135) return true; // SLC-40 cleared concrete/gravel pad perimeter
-      if (Math.hypot(x + 38, z - 215) < 88) return true; // HIF hangar
-      if (Math.hypot(x + 158, z - 118) < 55) return true; // Bunker & parking
+      if (Math.hypot(x, z) < 138) return true; // SLC-40 cleared concrete/gravel pad perimeter
+      if (Math.hypot(x + 38, z - 215) < 92) return true; // HIF hangar
+      if (Math.hypot(x + 158, z - 118) < 58) return true; // Bunker & parking
       if (
-        Math.hypot(x - LANDING_PAD_OFFSET_LOCAL.eastM, z - LANDING_PAD_OFFSET_LOCAL.southM) < 82
+        Math.hypot(x - LANDING_PAD_OFFSET_LOCAL.eastM, z - LANDING_PAD_OFFSET_LOCAL.southM) < 84
       )
         return true;
-      if (x > getCoastlineEastM(z) - 85) return true; // Sandy beach & Atlantic surf
-      if (x < -460) return true; // Keep clear of western estuary marshes
+      if (x > getCoastlineEastM(z) - 82) return true; // Sandy beach & Atlantic surf
+      if (x < -520) return true; // Keep clear of western estuary marshes
       return false;
     };
 
@@ -867,42 +1117,41 @@ export class CapeCanaveralScene {
     let pPlaced = 0;
     let fIdx = 0;
     let attempts = 0;
-    while (pPlaced < palmCount && attempts < 3000) {
+    while (pPlaced < palmCount && attempts < 3600) {
       attempts++;
-      const x = -440 + rand() * 880;
-      const z = -750 + rand() * 1450;
+      const x = -480 + rand() * 940;
+      const z = -820 + rand() * 1640;
       if (isClearZone(x, z)) continue;
 
       const elev = getCapeTerrainElevationM(x, z);
       if (elev < 1.0) continue;
 
       const y = elev - curvatureDropM(x, z);
-      const scale = 0.72 + rand() * 0.65;
-      const leanX = (rand() - 0.5) * 0.22;
-      const leanZ = (rand() - 0.5) * 0.22;
+      const scale = 0.72 + rand() * 0.68;
+      const yawTrunk = rand() * Math.PI * 2;
+      const leanX = (rand() - 0.5) * 0.16;
+      const leanZ = (rand() - 0.5) * 0.16;
 
-      dummy.position.set(x, y + 3.4 * scale, z);
-      dummy.rotation.set(leanX, rand() * Math.PI * 2, leanZ);
+      dummy.position.set(x, y + 3.6 * scale, z);
+      dummy.rotation.set(leanX, yawTrunk, leanZ);
       dummy.scale.set(scale, scale, scale);
       dummy.updateMatrix();
       trunks.setMatrixAt(pPlaced, dummy.matrix);
 
-      // Crown top position accounting for slight trunk lean
-      const topX = x - Math.sin(leanZ) * 3.4 * scale;
-      const topY = y + 6.7 * scale;
-      const topZ = z + Math.sin(leanX) * 3.4 * scale;
+      // Crown top position accounting for trunk curve & lean
+      const topX = x + Math.cos(yawTrunk) * 0.25 * scale - Math.sin(leanZ) * 3.6 * scale;
+      const topY = y + 7.2 * scale;
+      const topZ = z - Math.sin(yawTrunk) * 0.25 * scale + Math.sin(leanX) * 3.6 * scale;
 
-      for (let f = 0; f < 6; f++) {
-        const yaw = (f / 6) * Math.PI * 2 + rand() * 0.35;
-        const droop = 0.85 + rand() * 0.32;
-        dummy.position.set(
-          topX + Math.cos(yaw) * 1.45 * scale,
-          topY - 0.15 * scale,
-          topZ + Math.sin(yaw) * 1.45 * scale
-        );
-        dummy.rotation.set(0, -yaw + Math.PI / 2, 0);
-        dummy.rotateX(droop);
-        dummy.scale.set(scale, scale, scale);
+      for (let f = 0; f < frondsPerPalm; f++) {
+        const tier = f < 5 ? 0 : 1;
+        const yaw = (f / frondsPerPalm) * Math.PI * 2 + rand() * 0.38;
+        const pitchTilt = tier === 0 ? 0.16 + rand() * 0.22 : -0.32 + rand() * 0.18;
+        dummy.position.set(topX, topY - tier * 0.15 * scale, topZ);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.rotateX(pitchTilt);
+        const fScale = scale * (tier === 0 ? 1.0 : 0.82);
+        dummy.scale.set(fScale, fScale, fScale);
         dummy.updateMatrix();
         fronds.setMatrixAt(fIdx++, dummy.matrix);
       }
@@ -915,29 +1164,38 @@ export class CapeCanaveralScene {
     trunks.instanceMatrix.needsUpdate = true;
     fronds.instanceMatrix.needsUpdate = true;
 
-    // Place low irregular coastal palmetto scrub bushes
+    // Place organic multi-toned coastal saw-palmetto scrub bushes
     let sPlaced = 0;
     attempts = 0;
-    while (sPlaced < scrubCount && attempts < 4000) {
+    while (sPlaced < scrubCount && attempts < 5500) {
       attempts++;
-      const x = -460 + rand() * 920;
-      const z = -900 + rand() * 1750;
+      const x = -500 + rand() * 980;
+      const z = -960 + rand() * 1920;
       if (isClearZone(x, z)) continue;
 
       const elev = getCapeTerrainElevationM(x, z);
-      if (elev < 0.9) continue;
+      if (elev < 0.85) continue;
 
       const y = elev - curvatureDropM(x, z);
-      const scale = 0.65 + rand() * 1.35;
-      dummy.position.set(x, y + 0.7 * scale, z);
+      const scale = 0.58 + rand() * 1.42;
+      dummy.position.set(x, y + 0.55 * scale, z);
       dummy.rotation.set(0, rand() * Math.PI * 2, 0);
-      dummy.scale.set(scale, scale * (0.7 + rand() * 0.5), scale);
+      dummy.scale.set(scale, scale * (0.68 + rand() * 0.48), scale);
       dummy.updateMatrix();
-      scrubs.setMatrixAt(sPlaced++, dummy.matrix);
+      scrubs.setMatrixAt(sPlaced, dummy.matrix);
+
+      // Authentic coastal Florida foliage color palette variation
+      const hue = 0.24 + (rand() - 0.5) * 0.08;
+      const sat = 0.26 + rand() * 0.22;
+      const lit = 0.15 + rand() * 0.13;
+      colorTmp.setHSL(hue, sat, lit);
+      scrubs.setColorAt(sPlaced, colorTmp);
+      sPlaced++;
     }
 
     scrubs.count = sPlaced;
     scrubs.instanceMatrix.needsUpdate = true;
+    if (scrubs.instanceColor) scrubs.instanceColor.needsUpdate = true;
 
     parent.add(trunks);
     parent.add(fronds);
@@ -961,6 +1219,25 @@ export class CapeCanaveralScene {
 
     const distFromCape = Math.hypot(rel.x, rel.y, rel.z);
     this.terrainOcean.update(sunDirECEF, horizonColor, zenithColor, cameraAltitudeM, distFromCape);
-    this.localStructuresGroup.visible = distFromCape < 32_000;
+    const structuresVisible = distFromCape < 32_000;
+    this.localStructuresGroup.visible = structuresVisible;
+
+    // Animate gentle pre-launch cryogenic LOX boil-off mist drifting eastward in coastal breeze
+    if (structuresVisible && distFromCape < 1_800) {
+      for (const puff of this.cryoVentPuffs) {
+        puff.phase = (puff.phase + dt * puff.speed) % 1.0;
+        const t = puff.phase;
+        const driftX = t * 9.5;
+        const riseY = t * 4.2 + Math.sin(t * 5.0 + puff.basePos.y) * 0.6;
+        const driftZ = Math.cos(this.beaconClock * 0.7 + puff.phase * 6.28) * 1.1 * t;
+        puff.mesh.position.set(
+          puff.basePos.x + driftX,
+          puff.basePos.y + riseY,
+          puff.basePos.z + driftZ
+        );
+        const s = 0.55 + Math.sin(t * Math.PI) * 2.1;
+        puff.mesh.scale.set(s * 1.25, s * 0.85, s);
+      }
+    }
   }
 }

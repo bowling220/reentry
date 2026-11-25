@@ -38,16 +38,16 @@ interface PlumeParticle {
   growRate: number;
   opacity: number;
   spin: number;
+  rotY: number;
+  rotZ: number;
 }
 
 /**
- * WebGPU-verified RP-1 / LOX & Merlin Vacuum rocket exhaust VFX system.
- *
- * Phase 3 upgrades:
- * - Curved parabolic LatheGeometry diffuse vacuum plume bell with smooth view-angle Fresnel
- *   edge feathering so high-altitude & space exhaust looks naturally gaseous and expansive
- *   rather than a rigid hard-edged cone.
- * - Automatically scales plume size to active stage thrust (9x Merlin 1D vs 1x MVac vs Sat RCS).
+ * WebGPU-verified RP-1 / LOX & Merlin Vacuum rocket exhaust VFX system:
+ * - Multi-layered volumetric supersonic core (Mach shock diamonds), turbulent flame column,
+ *   curved parabolic Prandtl-Meyer vacuum plume bell, and dynamic flame-trench lighting.
+ * - True 3D sculpted volumetric billowing deluge steam, exhaust smoke, & contrail puffs
+ *   (ZERO flat 2D camera-facing image sprite billboards!).
  */
 export class ExhaustVfx {
   public readonly plumeGroup: THREE.Group;
@@ -66,7 +66,8 @@ export class ExhaustVfx {
   private readonly uIgnitionPulse = uniform(0.0);
 
   private readonly particles: PlumeParticle[] = [];
-  private readonly smokeMeshes: THREE.Sprite[] = [];
+  private readonly puffMeshes: THREE.Mesh[] = [];
+  private readonly puffMaterials: THREE.MeshStandardMaterial[] = [];
   private readonly maxParticles: number;
   private trenchSpawnAcc = 0;
   private contrailSpawnAcc = 0;
@@ -116,18 +117,19 @@ export class ExhaustVfx {
     this.heatHaloMesh.renderOrder = 19;
     this.plumeGroup.add(this.heatHaloMesh);
 
-    this.engineLight = new THREE.PointLight(0xffa44c, 0, 320, 1.35);
+    this.engineLight = new THREE.PointLight(0xffa44c, 0, 360, 1.35);
     this.engineLight.position.set(0, -4.5, 0);
     this.plumeGroup.add(this.engineLight);
 
-    this.padBounceLight = new THREE.PointLight(0xff7d2a, 0, 240, 1.6);
+    this.padBounceLight = new THREE.PointLight(0xff7d2a, 0, 260, 1.55);
     this.padBounceLight.position.set(0, -14, 0);
     this.plumeGroup.add(this.padBounceLight);
 
+    // 5. True 3D sculpted billowing steam & smoke puffs (replaces flat 2D Sprite billboards!)
     this.smokeGroup = new THREE.Group();
-    this.smokeGroup.name = 'LaunchSmokeAndSteam';
-    this.maxParticles = enablePadSmoke ? 150 : 28;
-    const cloudTex = this.createTurbulentCloudSprite();
+    this.smokeGroup.name = 'LaunchSmokeAndSteam3D';
+    this.maxParticles = enablePadSmoke ? 120 : 24;
+    const puffGeo = this.createBillowPuffGeometry();
 
     for (let i = 0; i < this.maxParticles; i++) {
       this.particles.push({
@@ -137,39 +139,61 @@ export class ExhaustVfx {
         life: 1,
         posECEF: { x: 0, y: 0, z: 0 },
         velECEF: { x: 0, y: 0, z: 0 },
-        size: 10,
-        growRate: 8,
+        size: 6,
+        growRate: 6,
         opacity: 0,
         spin: 0,
+        rotY: Math.random() * Math.PI * 2,
+        rotZ: Math.random() * Math.PI * 2,
       });
 
-      const spriteMat = new THREE.SpriteMaterial({
-        map: cloudTex,
-        color: 0xffffff,
+      const puffMat = new THREE.MeshStandardMaterial({
+        color: 0xf0f4f8,
+        emissive: new THREE.Color(0x000000),
+        emissiveIntensity: 0,
+        roughness: 0.96,
+        metalness: 0.0,
         transparent: true,
         opacity: 0,
         depthWrite: false,
       });
-      const sprite = new THREE.Sprite(spriteMat);
-      sprite.visible = false;
-      sprite.frustumCulled = false;
-      sprite.renderOrder = 25;
-      this.smokeMeshes.push(sprite);
-      this.smokeGroup.add(sprite);
+      const mesh = new THREE.Mesh(puffGeo, puffMat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 25;
+      this.puffMaterials.push(puffMat);
+      this.puffMeshes.push(mesh);
+      this.smokeGroup.add(mesh);
     }
   }
 
   /**
-   * Generates an organic curved parabolic plume envelope (starts tight at nozzle, flares
-   * smoothly outward like a real supersonic/vacuum Prandtl-Meyer expansion fan).
+   * Builds an organic bumpy 3D volumetric cloud puff geometry so deluge steam & exhaust smoke
+   * receive genuine 3D directional sun & engine-fire lighting from every camera angle.
    */
+  private createBillowPuffGeometry(): THREE.BufferGeometry {
+    const geo = new THREE.IcosahedronGeometry(0.55, 2);
+    const pos = geo.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      const n =
+        1.0 +
+        0.22 * Math.sin(v.x * 5.2 + v.y * 4.7) +
+        0.16 * Math.cos(v.z * 6.1 - v.x * 4.3);
+      v.multiplyScalar(n);
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
+
   private createParabolicBellGeometry(widthMult = 1.0): THREE.LatheGeometry {
     const pts: THREE.Vector2[] = [];
     const steps = 18;
     const length = 46;
     for (let i = 0; i <= steps; i++) {
-      // i = 0 at far tail (v=0), i = steps at nozzle exit (v=1) to match CylinderGeometry UV convention
-      const along = 1 - i / steps; // 0 at nozzle -> 1 at tail
+      const along = 1 - i / steps;
       const y = -along * length;
       const radius = (1.35 + Math.pow(along, 0.62) * 3.8) * widthMult;
       pts.push(new THREE.Vector2(radius, y));
@@ -190,7 +214,7 @@ export class ExhaustVfx {
     const r2 = dx.mul(dx).add(dy.mul(dy));
     const radial = pow(clamp(float(1.0).sub(r2), float(0.001), float(1.0)), float(1.6));
 
-    mat.colorNode = vec3(1.0, 0.94, 0.78).mul(3.0);
+    mat.colorNode = vec3(1.0, 0.94, 0.78).mul(3.2);
     mat.opacityNode = radial.mul(this.uThrottle);
     return mat;
   }
@@ -209,20 +233,17 @@ export class ExhaustVfx {
     const angleU = coords.x.mul(6.2831853);
     const t = time.mul(layer === 'halo' ? 20.0 : 40.0);
 
-    // Pure fragment-stage view-angle Fresnel edge softening eliminates rigid cone silhouettes!
     const nWorld = normalize(normalWorld);
     const viewDir = normalize(sub(cameraPosition, positionWorld));
     const facing = clamp(abs(dot(nWorld, viewDir)), float(0.001), float(1.0));
     const edgeExp = layer === 'core' ? 0.85 : layer === 'mid' ? 1.45 : layer === 'outer' ? 2.15 : 2.6;
     const softEdge = pow(facing, float(edgeExp));
 
-    // Supersonic flowing plasma turbulence
     const s1 = sin(along.mul(22.0).sub(t).add(sin(angleU.mul(3.0)).mul(1.8))).mul(0.5).add(0.5);
     const s2 = cos(along.mul(46.0).sub(t.mul(1.75)).sub(cos(angleU.mul(5.0)).mul(1.4))).mul(0.5).add(0.5);
     const s3 = sin(angleU.mul(7.0).add(along.mul(14.0)).sub(t.mul(0.9))).mul(0.5).add(0.5);
     const turbulence = s1.mul(0.5).add(s2.mul(0.32)).add(s3.mul(0.18));
 
-    // Sea-level Mach shock diamonds
     const diamondWave = pow(
       clamp(sin(along.mul(36.0).sub(t.mul(0.18))).mul(0.5).add(0.5), float(0.001), float(1.0)),
       float(4.0)
@@ -233,7 +254,6 @@ export class ExhaustVfx {
       .mul(this.uPressureRatio);
 
     const entry = smoothstep(float(0.0), float(0.055), along);
-    // In vacuum, exhaust diffuses smoothly & rapidly with distance from nozzle
     const tailExp = layer === 'core' ? 1.65 : layer === 'mid' ? 1.75 : layer === 'outer' ? 1.85 : 2.1;
     const tailFade = pow(clamp(float(1.0).sub(along), float(0.001), float(1.0)), float(tailExp));
 
@@ -246,7 +266,6 @@ export class ExhaustVfx {
             ? mix(vec3(0.98, 0.54, 0.16), vec3(0.82, 0.2, 0.04), along)
             : mix(vec3(1.0, 0.48, 0.14), vec3(0.55, 0.14, 0.03), along);
 
-    // Diffuse realistic space vacuum plume: warm incandescent near nozzle -> gaseous lavender-cyan edge
     const vacColor =
       layer === 'core'
         ? mix(vec3(1.0, 0.95, 0.92), vec3(0.75, 0.72, 1.0), pow(along, float(0.6)))
@@ -258,22 +277,20 @@ export class ExhaustVfx {
 
     const atmoBlend = clamp(this.uPressureRatio.mul(3.4), float(0.0), float(1.0));
     const baseColor = mix(vacColor, slColor, atmoBlend);
-
-    // Slightly lower opacity in vacuum so plume looks genuinely wispy & diffuse rather than solid!
     const vacDiffuseness = mix(float(0.62), float(1.0), atmoBlend);
 
     const pulse = float(1.0).add(this.uIgnitionPulse.mul(0.85));
     const gain =
       layer === 'core'
-        ? float(2.5).add(machBoost.mul(2.1))
+        ? float(2.6).add(machBoost.mul(2.2))
         : layer === 'mid'
-          ? float(1.45).add(turbulence.mul(0.8))
+          ? float(1.48).add(turbulence.mul(0.82))
           : layer === 'outer'
-            ? float(0.95).add(turbulence.mul(0.6))
-            : float(0.35).add(turbulence.mul(0.25));
+            ? float(0.96).add(turbulence.mul(0.62))
+            : float(0.36).add(turbulence.mul(0.26));
 
     const alphaScale =
-      layer === 'core' ? 0.94 : layer === 'mid' ? 0.62 : layer === 'outer' ? 0.42 : 0.2;
+      layer === 'core' ? 0.95 : layer === 'mid' ? 0.64 : layer === 'outer' ? 0.42 : 0.2;
 
     const alpha = entry
       .mul(tailFade)
@@ -289,45 +306,10 @@ export class ExhaustVfx {
     return mat;
   }
 
-  private createTurbulentCloudSprite(): THREE.CanvasTexture {
-    const size = 256;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d')!;
-    ctx.clearRect(0, 0, size, size);
-
-    let seed = 13579;
-    const rand = () => {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
-
-    for (let i = 0; i < 16; i++) {
-      const a = rand() * Math.PI * 2;
-      const dist = rand() * 40;
-      const cx = size / 2 + Math.cos(a) * dist;
-      const cy = size / 2 + Math.sin(a) * dist;
-      const r = 38 + rand() * 44;
-      const grad = ctx.createRadialGradient(cx, cy, 4, cx, cy, r);
-      grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.36)');
-      grad.addColorStop(0.5, 'rgba(242, 245, 248, 0.16)');
-      grad.addColorStop(1.0, 'rgba(232, 238, 244, 0.0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.needsUpdate = true;
-    return tex;
-  }
-
   public reset(): void {
     for (let i = 0; i < this.maxParticles; i++) {
       this.particles[i].active = false;
-      this.smokeMeshes[i].visible = false;
+      this.puffMeshes[i].visible = false;
     }
     this.uThrottle.value = 0;
     this.uIgnitionPulse.value = 0;
@@ -344,7 +326,6 @@ export class ExhaustVfx {
     const atmo = sampleAtmosphere(Math.max(0, altASL));
     const pRatio = atmo.pressureRatio;
 
-    // Scale plume size proportionally to active engine thrust class (S1 8 MN vs S2 981 kN vs Sat 1.2 kN)
     const thrustScale = Math.pow(Math.max(0.002, rocket.config.maxThrustVacN / 8_227_000), 0.34);
 
     if (thr > 0.05 && this.prevThrottle <= 0.05) {
@@ -398,10 +379,10 @@ export class ExhaustVfx {
 
       const flicker = 0.88 + 0.24 * Math.sin(performance.now() * 0.047) * Math.cos(performance.now() * 0.023);
       this.engineLight.intensity =
-        thr * (2500 + this.ignitionFlash * 1700) * flicker * (0.45 + 0.55 * pRatio) * thrustScale;
+        thr * (2700 + this.ignitionFlash * 1800) * flicker * (0.45 + 0.55 * pRatio) * thrustScale;
 
       const groundProx = Math.max(0, 1 - altAGL / 95);
-      this.padBounceLight.intensity = thr * groundProx * 2300 * flicker * thrustScale;
+      this.padBounceLight.intensity = thr * groundProx * 2500 * flicker * thrustScale;
     } else {
       this.engineLight.intensity = 0;
       this.padBounceLight.intensity = 0;
@@ -412,10 +393,10 @@ export class ExhaustVfx {
 
     if (visible && altAGL < 140 && thrustScale > 0.3) {
       const groundFactor = Math.pow(1 - altAGL / 140, 0.9);
-      this.trenchSpawnAcc += dt * (58 + this.ignitionFlash * 35) * thr * groundFactor;
+      this.trenchSpawnAcc += dt * (46 + this.ignitionFlash * 28) * thr * groundFactor;
       while (this.trenchSpawnAcc >= 1) {
         this.trenchSpawnAcc -= 1;
-        const isFireCore = Math.random() < 0.3 && altAGL < 45;
+        const isFireCore = Math.random() < 0.28 && altAGL < 45;
         this.spawnParticle(
           isFireCore ? 'exhaustFire' : 'trenchSteam',
           nozzleECEF,
@@ -428,7 +409,7 @@ export class ExhaustVfx {
 
     if (visible && altAGL > 22 && altASL < 24_000 && thrustScale > 0.3) {
       const atmoTrailFactor = Math.max(0.18, pRatio);
-      this.contrailSpawnAcc += dt * 22 * thr * atmoTrailFactor;
+      this.contrailSpawnAcc += dt * 18 * thr * atmoTrailFactor;
       while (this.contrailSpawnAcc >= 1) {
         this.contrailSpawnAcc -= 1;
         this.spawnParticle('contrail', nozzleECEF, rocketDown, altAGL, rocket.velECEF);
@@ -443,16 +424,16 @@ export class ExhaustVfx {
 
     for (let i = 0; i < this.maxParticles; i++) {
       const p = this.particles[i];
-      const sprite = this.smokeMeshes[i];
+      const mesh = this.puffMeshes[i];
       if (!p.active) {
-        sprite.visible = false;
+        mesh.visible = false;
         continue;
       }
 
       p.age += dt;
       if (p.age >= p.life) {
         p.active = false;
-        sprite.visible = false;
+        mesh.visible = false;
         continue;
       }
 
@@ -465,39 +446,50 @@ export class ExhaustVfx {
       p.velECEF.z *= drag;
 
       if (p.kind === 'trenchSteam' || p.kind === 'crashFire') {
-        const rise = (p.kind === 'crashFire' ? 9.5 : 3.2) * dt;
+        const rise = (p.kind === 'crashFire' ? 9.5 : 3.4) * dt;
         p.velECEF.x += CAPE_FRAME.up.x * rise;
         p.velECEF.y += CAPE_FRAME.up.y * rise;
         p.velECEF.z += CAPE_FRAME.up.z * rise;
       }
 
       p.size += p.growRate * dt;
+      p.rotY += p.spin * dt;
 
       const lifeT = p.age / p.life;
       const fadeIn = Math.min(1, lifeT * 6.0);
-      const fadeOut = Math.pow(1 - lifeT, 1.4);
+      const fadeOut = Math.pow(1 - lifeT, 1.5);
       const alpha = p.opacity * fadeIn * fadeOut;
 
       const rel = subVec3(p.posECEF, cameraPosECEF);
-      sprite.position.set(rel.x, rel.y, rel.z);
-      sprite.scale.set(p.size, p.size, 1);
-      sprite.visible = alpha > 0.008;
+      mesh.position.set(rel.x, rel.y, rel.z);
+      mesh.rotation.set(0, p.rotY, p.rotZ);
+      mesh.scale.set(p.size, p.size * 0.82, p.size);
+      mesh.visible = alpha > 0.01;
 
-      const mat = sprite.material as THREE.SpriteMaterial;
+      const mat = this.puffMaterials[i];
       mat.opacity = alpha;
-      mat.rotation += p.spin * dt;
 
       if (p.kind === 'exhaustFire') {
-        mat.color.setHex(lifeT < 0.42 ? 0xffae52 : 0xf6e6d4);
+        const firePhase = Math.max(0, 1 - lifeT * 2.2);
+        mat.color.setHex(firePhase > 0.2 ? 0xffc67c : 0xece3d8);
+        mat.emissive.setHex(0xff7722);
+        mat.emissiveIntensity = firePhase * 1.9;
       } else if (p.kind === 'trenchSteam') {
-        const litWarm = visible && altAGL < 55 && lifeT < 0.35;
-        mat.color.setHex(litWarm ? 0xffdfb8 : 0xf0f4f8);
+        const litWarm = visible && altAGL < 55 && lifeT < 0.4;
+        mat.color.setHex(litWarm ? 0xffe4c4 : 0xeef3f8);
+        mat.emissive.setHex(0xff9238);
+        mat.emissiveIntensity = litWarm ? (1 - lifeT / 0.4) * 0.42 : 0.0;
       } else if (p.kind === 'contrail') {
-        mat.color.setHex(0xe8ecf2);
+        mat.color.setHex(0xe8eef5);
+        mat.emissiveIntensity = 0.0;
       } else if (p.kind === 'shutdownSmoke') {
-        mat.color.setHex(0x6c7076);
+        mat.color.setHex(0x6d7279);
+        mat.emissiveIntensity = 0.0;
       } else {
-        mat.color.setHex(lifeT < 0.3 ? 0xff7b28 : 0x2f3236);
+        const fire = Math.max(0, 1 - lifeT * 2.8);
+        mat.color.setHex(fire > 0.1 ? 0xff7b28 : 0x2f3236);
+        mat.emissive.setHex(0xff5512);
+        mat.emissiveIntensity = fire * 2.2;
       }
     }
   }
@@ -515,13 +507,15 @@ export class ExhaustVfx {
     slot.active = true;
     slot.kind = kind;
     slot.age = 0;
-    slot.spin = (Math.random() - 0.5) * 0.9;
+    slot.spin = (Math.random() - 0.5) * 1.1;
+    slot.rotY = Math.random() * Math.PI * 2;
+    slot.rotZ = Math.random() * Math.PI * 2;
 
     if (kind === 'trenchSteam' || kind === 'exhaustFire') {
       const inTrench = altAGL < 45 && Math.random() < 0.78;
       const side = Math.random() < 0.5 ? 1 : -1;
       const angle = Math.random() * Math.PI * 2;
-      const speed = kind === 'exhaustFire' ? 38 + Math.random() * 28 : 28 + Math.random() * 38;
+      const speed = kind === 'exhaustFire' ? 36 + Math.random() * 26 : 26 + Math.random() * 34;
 
       const vxLocal = inTrench ? (Math.random() - 0.5) * 14 : Math.cos(angle) * speed;
       const vzLocal = inTrench ? side * speed * 1.55 : Math.sin(angle) * speed;
@@ -545,10 +539,10 @@ export class ExhaustVfx {
             )
           : addScaledVec3(nozzleECEF, exhaustDirECEF, Math.min(altAGL, 26));
 
-      slot.life = kind === 'exhaustFire' ? 1.5 + Math.random() * 1.1 : 2.8 + Math.random() * 2.2;
-      slot.size = kind === 'exhaustFire' ? 8 + Math.random() * 6 : 10 + Math.random() * 8;
-      slot.growRate = kind === 'exhaustFire' ? 11 : 13 + Math.random() * 9;
-      slot.opacity = kind === 'exhaustFire' ? 0.62 : 0.46;
+      slot.life = kind === 'exhaustFire' ? 1.4 + Math.random() * 1.0 : 2.6 + Math.random() * 2.0;
+      slot.size = kind === 'exhaustFire' ? 6.5 + Math.random() * 4.5 : 8.5 + Math.random() * 6.5;
+      slot.growRate = kind === 'exhaustFire' ? 9.5 : 11.5 + Math.random() * 7.5;
+      slot.opacity = kind === 'exhaustFire' ? 0.68 : 0.48;
     } else if (kind === 'contrail') {
       const jitter = 6;
       slot.posECEF = addScaledVec3(nozzleECEF, exhaustDirECEF, 26 + Math.random() * 10);
@@ -557,9 +551,9 @@ export class ExhaustVfx {
         y: rocketVelECEF.y * 0.1 + exhaustDirECEF.y * 24 + (Math.random() - 0.5) * jitter,
         z: rocketVelECEF.z * 0.1 + exhaustDirECEF.z * 24 + (Math.random() - 0.5) * jitter,
       };
-      slot.life = 2.4 + Math.random() * 1.6;
-      slot.size = 6.5 + Math.random() * 4.5;
-      slot.growRate = 9.5 + Math.random() * 6;
+      slot.life = 2.2 + Math.random() * 1.4;
+      slot.size = 5.5 + Math.random() * 3.5;
+      slot.growRate = 8.0 + Math.random() * 5.0;
       slot.opacity = 0.28;
     } else if (kind === 'shutdownSmoke') {
       slot.posECEF = addScaledVec3(nozzleECEF, exhaustDirECEF, 3 + Math.random() * 5);
@@ -569,8 +563,8 @@ export class ExhaustVfx {
         z: rocketVelECEF.z * 0.6 + exhaustDirECEF.z * 16 + (Math.random() - 0.5) * 6,
       };
       slot.life = 1.6 + Math.random() * 1.0;
-      slot.size = 5 + Math.random() * 4;
-      slot.growRate = 7;
+      slot.size = 4.5 + Math.random() * 3.5;
+      slot.growRate = 6.5;
       slot.opacity = 0.42;
     } else {
       const a = Math.random() * Math.PI * 2;
@@ -585,9 +579,9 @@ export class ExhaustVfx {
         z: CAPE_FRAME.east.z * vx + CAPE_FRAME.up.z * vy + CAPE_FRAME.south.z * vz,
       };
       slot.life = 2.8 + Math.random() * 2.2;
-      slot.size = 16 + Math.random() * 14;
-      slot.growRate = 18;
-      slot.opacity = 0.82;
+      slot.size = 12 + Math.random() * 10;
+      slot.growRate = 14;
+      slot.opacity = 0.78;
     }
   }
 }
