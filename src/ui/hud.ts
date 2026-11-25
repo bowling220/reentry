@@ -36,6 +36,8 @@ export interface HudFlightComputerState {
   scenarioBadge: string | null;
   canReturnHome: boolean;
   returningHome: boolean;
+  recoveryMode?: string;
+  recoveryReason?: string;
 }
 
 /**
@@ -358,7 +360,7 @@ export class FlightHud {
             </div>
             <div class="deck-row">
               <button class="hud-btn primary" id="btn-launch">IGNITE / LAUNCH</button>
-              <button class="hud-btn" id="btn-return-home" disabled title="Start Coastal cruise in AUTO DEMOS to enable return guidance">RETURN HOME</button>
+              <button class="hud-btn" id="btn-return-home" disabled title="Available in flight on vehicles with engines and landing legs">RETURN HOME</button>
               <button class="hud-btn" id="btn-pause">PAUSE</button>
               <button class="hud-btn danger" id="btn-reset">RESET</button>
             </div>
@@ -573,9 +575,13 @@ export class FlightHud {
     const activeCraft = manager.activeSpacecraft;
     const returnButton = this.els.btnReturnHome as HTMLButtonElement;
     returnButton.disabled = !fcState?.canReturnHome || !!fcState?.returningHome;
-    returnButton.textContent = fcState?.returningHome ? 'RETURNING HOME' : 'RETURN HOME';
+    returnButton.textContent = fcState?.returningHome
+      ? (fcState.recoveryMode === 'LOCAL_LANDING' ? 'LOCAL LANDING' : fcState.recoveryMode === 'UNPOWERED' ? 'NO FUEL' : 'RETURNING HOME')
+      : 'RETURN HOME';
     returnButton.classList.toggle('active', !!fcState?.returningHome);
-    returnButton.title = fcState?.canReturnHome ? 'Fly back to LZ-1 and land automatically' : 'Available during the Coastal cruise demo';
+    returnButton.title = fcState?.returningHome && fcState.recoveryReason ? fcState.recoveryReason
+      : fcState?.canReturnHome ? 'Plan a return to LZ-1 using current fuel and velocity; attempt a local landing if home is out of reach. Esc overrides.'
+      : 'Available in flight on vehicles with engines and landing legs';
     const vehicleSelect = this.root.querySelector<HTMLSelectElement>('#launch-vehicle')!;
     vehicleSelect.value = manager.launchVehicleId;
     vehicleSelect.disabled = activeCraft.dynamics.status !== 'PRELAUNCH';

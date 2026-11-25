@@ -82,7 +82,4 @@ export const COASTAL_PROGRAM: StoredProgram = {
   id: 'demo-coastal-v1', name: '07_coastal_cruise.js', language: 'javascript', isExample: true,
   updatedAt: 13, code: coastalFlightSource(),
 };
-export const RETURN_HOME_PROGRAM: StoredProgram = {
-  id: 'demo-return-home-v1', name: '08_return_home.js', language: 'javascript', isExample: true,
-  updatedAt: 14, code: coastalFlightSource(true),
-};
+export { ADAPTIVE_RETURN_PROGRAM as RETURN_HOME_PROGRAM } from './adaptiveReturnProgram';

@@ -62,6 +62,7 @@ async function bootstrap(): Promise<void> {
   let demoRunning = false;
   let coastalTourCraftId: string | null = null;
   let lastCoastalPhase = '';
+  const recoveryModes = new Map<string, string>();
   let selectedLaunchVehicle: LaunchVehicleId = 'falcon9';
   let workspace!: EngineeringWorkspace;
 
@@ -78,6 +79,7 @@ async function bootstrap(): Promise<void> {
     demoRunning = false;
     coastalTourCraftId = null;
     lastCoastalPhase = '';
+    recoveryModes.clear();
     const prevCraft = spacecraftManager.activeSpacecraft;
     const prevFc = prevCraft ? fcManager.getComputer(prevCraft.id) : null;
     const savedProg =
@@ -231,15 +233,16 @@ async function bootstrap(): Promise<void> {
     },
     onReturnHome: () => {
       const craft = spacecraftManager.activeSpacecraft;
-      if (craft.id !== coastalTourCraftId || !craft.dynamics.hasLiftedOff ||
-          craft.dynamics.status === 'LANDED' || craft.dynamics.status === 'CRASHED' || craft.dynamics.propellantKg <= 0) return;
+      if (!craft.dynamics.hasLiftedOff || !craft.dynamics.hasLandingGear || craft.dynamics.config.maxThrustVacN <= 0 ||
+          craft.dynamics.status === 'LANDED' || craft.dynamics.status === 'CRASHED') return;
       input.clear();
       const program = RETURN_HOME_PROGRAM;
+      recoveryModes.delete(craft.id);
       fcManager.installProgram(craft.id, program.id, program.name, program.language, program.code);
       fcManager.startProgram(craft, spacecraftManager, planet);
       if (clock.paused) clock.togglePause();
       clock.setTimeScale(2);
-      spacecraftManager.pushEvent('RETURN HOME ENGAGED', 'Flying to LZ-1 for an automatic landing. Esc for manual override.', 'success');
+      spacecraftManager.pushEvent('RECOVERY GUIDANCE ENGAGED', 'Assessing current position, speed and remaining fuel. Esc for manual override.', 'info');
     },
     onSelectLaunchVehicle: (id) => {
       selectedLaunchVehicle = id;
@@ -455,8 +458,16 @@ async function bootstrap(): Promise<void> {
     const activeFc = fcManager.getComputer(activeCraft.id);
     const coastalActive = activeCraft.id === coastalTourCraftId;
     const coastalPhase = String(activeFc.customVariables.phase ?? '');
-    const returningHome = coastalActive && activeFc.authority === 'PROGRAM' &&
-      (activeFc.programId === RETURN_HOME_PROGRAM.id || ['RETURN', 'LANDING', 'TOUCHDOWN', 'DONE'].includes(coastalPhase));
+    const adaptiveRecovery = activeFc.authority === 'PROGRAM' && activeFc.programId === RETURN_HOME_PROGRAM.id;
+    const recoveryMode = adaptiveRecovery ? String(activeFc.customVariables.return_mode ?? 'ASSESS') : '';
+    const returningHome = adaptiveRecovery || (coastalActive && activeFc.authority === 'PROGRAM' &&
+      ['RETURN', 'LANDING', 'TOUCHDOWN', 'DONE'].includes(coastalPhase));
+    if (adaptiveRecovery && recoveryModes.get(activeCraft.id) !== recoveryMode) {
+      recoveryModes.set(activeCraft.id, recoveryMode);
+      if (recoveryMode === 'HOME') spacecraftManager.pushEvent('HOME ROUTE SELECTED', 'Returning to LZ-1 with the remaining propellant.', 'success');
+      if (recoveryMode === 'LOCAL_LANDING') spacecraftManager.pushEvent('LOCAL LANDING ATTEMPT', String(activeFc.customVariables.return_reason ?? 'Home exceeds the estimated fuel budget.'), 'info');
+      if (recoveryMode === 'UNPOWERED') spacecraftManager.pushEvent('NO PROPELLANT REMAINING', 'Recovery guidance can stabilize attitude but cannot perform a powered landing.', 'info');
+    }
     if (coastalActive && coastalPhase !== lastCoastalPhase) {
       lastCoastalPhase = coastalPhase;
       if (coastalPhase === 'HOLD') spacecraftManager.pushEvent('COASTAL WAYPOINT REACHED', 'Press RETURN HOME when ready. Automatic reserve protection remains active.', 'info');
@@ -477,8 +488,10 @@ async function bootstrap(): Promise<void> {
         authority: activeFc.authority,
         workspaceOpen: workspace.mode !== 'CLOSED',
         scenarioBadge: currentScenario.isSandbox ? `SANDBOX` : null,
-        canReturnHome: coastalActive && activeDyn.hasLiftedOff && activeDyn.propellantKg > 0 && !['LANDED', 'CRASHED'].includes(activeDyn.status),
-        returningHome: returningHome && activeDyn.status !== 'LANDED',
+        canReturnHome: activeDyn.hasLiftedOff && activeDyn.hasLandingGear && activeDyn.config.maxThrustVacN > 0 && !['LANDED', 'CRASHED'].includes(activeDyn.status),
+        returningHome: returningHome && !['LANDED', 'CRASHED'].includes(activeDyn.status),
+        recoveryMode,
+        recoveryReason: String(activeFc.customVariables.return_reason ?? ''),
       }
     );
 

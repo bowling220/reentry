@@ -5,6 +5,7 @@ import { SpacecraftEntity, SpacecraftManager } from '../simulation/spacecraftMan
 import { TelemetrySnapshot } from '../simulation/telemetry';
 import { CAPE_FRAME, LANDING_PAD_TOP_Y } from '../simulation/terrainHeight';
 import { FLIGHT_API_VERSION, ReentryTelemetry } from './apiTypes';
+import { sampleAtmosphere } from '../simulation/atmosphere';
 
 /**
  * Builds a plain, read-only JSON-serializable REENTRY Flight API v1.0.0 telemetry snapshot
@@ -18,6 +19,7 @@ export function buildProgramTelemetry(
   dt: number
 ): ReentryTelemetry {
   const dyn = craft.dynamics;
+  const pressure = sampleAtmosphere(Math.max(0, t.altitudeASLM)).pressureRatio;
   const stageAction = manager.getNextStageAction(craft);
 
   // Local East-Up-South velocity
@@ -88,6 +90,9 @@ export function buildProgramTelemetry(
       engineIgnited: t.engineIgnited,
       throttle: dyn.actualThrottle,
       thrustN: dyn.currentThrustN,
+      availableThrustN: dyn.config.maxThrustSeaLevelN * pressure + dyn.config.maxThrustVacN * (1 - pressure),
+      specificImpulseS: dyn.config.ispSeaLevelS * pressure + dyn.config.ispVacS * (1 - pressure),
+      minimumThrottle: dyn.config.minThrottle,
     },
     environment: {
       atmosphericDensity: t.atmosphericDensityKgM3,

@@ -73,6 +73,9 @@ export interface ReentryTelemetry {
     engineIgnited: boolean;
     throttle: number;
     thrustN: number;
+    availableThrustN: number;
+    specificImpulseS: number;
+    minimumThrottle: number;
   };
   environment: {
     atmosphericDensity: number;

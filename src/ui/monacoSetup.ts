@@ -49,7 +49,7 @@ interface ReentryTelemetry {
     readonly rightLocal: { readonly x: number; readonly y: number; readonly z: number };
   };
   readonly acceleration: { readonly feltMs2: number; readonly gForce: number };
-  readonly propulsion: { readonly engineIgnited: boolean; readonly throttle: number; readonly thrustN: number };
+  readonly propulsion: { readonly engineIgnited: boolean; readonly throttle: number; readonly thrustN: number; readonly availableThrustN: number; readonly specificImpulseS: number; readonly minimumThrottle: number };
   readonly environment: {
     readonly atmosphericDensity: number;
     readonly dynamicPressurePa: number;

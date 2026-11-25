@@ -395,7 +395,7 @@ export const API_DOCUMENTATION_HTML = `
       <li><code>t.position</code>: <code>altitudeASL, altitudeAGL, latitudeDeg, longitudeDeg, distanceFromPadM</code></li>
       <li><code>t.velocity</code>: <code>vertical, horizontal, surfaceSpeed, inertialSpeed, mach, surfaceLocal.{east,up,south}</code></li>
       <li><code>t.attitude</code>: <code>pitchDeg, headingDeg, rollDeg, tiltFromVerticalDeg, angularVelocityBody.{x,y,z}, noseLocal.{x,y,z}, rightLocal.{x,y,z}</code>. Local direction vectors use east/up/south axes.</li>
-      <li><code>t.propulsion</code>: <code>engineIgnited, throttle, thrustN</code></li>
+      <li><code>t.propulsion</code>: <code>engineIgnited, throttle, thrustN, availableThrustN, specificImpulseS, minimumThrottle</code></li>
       <li><code>t.environment</code>: <code>atmosphericDensity, dynamicPressurePa, gravityMs2, inSpace, reentryHeat</code></li>
       <li><code>t.orbit</code>: <code>valid, classification, apoapsisM, periapsisM, inclinationDeg, eccentricity, periodS, timeToApoapsisS, timeToPeriapsisS</code></li>
       <li><code>t.landingTarget</code>: <code>name, distanceM, relativeEastM, relativeSouthM, elevationM</code></li>
