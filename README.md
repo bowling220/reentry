@@ -20,6 +20,19 @@ attitude controls; both rockets use the shared Cape Canaveral environment.
 Press **F** to open the programmable flight computer workspace. The seven
 engineering test scenarios use REENTRY-9; standard prelaunch uses your selected rocket.
 
+Click **AUTO DEMOS** in the top bar to watch a ready-made flight:
+
+- **Quick launch & landing**: a reusable booster hops to 1 km and lands in about a minute of simulation time.
+- **Space & return**: a reusable booster climbs above 100 km and returns in about nine minutes of simulation time.
+- **Landing preview**: a booster starts 950 m above LZ-1 and lands in about 30 seconds of simulation time.
+
+Demos start at 2× speed and replace the current flight. **Esc** takes manual
+control; **RESET** ends the demo. Scripts `04_auto_launch_and_land.js`,
+`05_auto_space_and_return.js`, and `06_auto_booster_landing.js` are installed in
+the local program library without overwriting existing saved programs. Use the
+demo buttons to prepare the matching reusable booster, rather than running a
+return script on the fully assembled orbital stack or Saturn V.
+
 ## Develop
 
 ```sh

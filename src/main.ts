@@ -6,6 +6,8 @@ import { LaunchVehicleId } from './config/launchVehicles';
 import { FlightComputerManager } from './flightComputer/flightComputerManager';
 import { FlightDataRecorder } from './flightComputer/flightRecorder';
 import { ProgramLibrary } from './flightComputer/programLibrary';
+import { AUTO_DEMOS } from './flightComputer/demoPrograms';
+import { configureDemoVehicle } from './simulation/demoFlights';
 import { InputManager } from './input/inputManager';
 import { RendererManager } from './rendering/rendererManager';
 import { SceneController } from './rendering/sceneController';
@@ -56,6 +58,7 @@ async function bootstrap(): Promise<void> {
   const recorder = new FlightDataRecorder();
 
   let currentScenario = FLIGHT_SCENARIOS[0];
+  let demoRunning = false;
   let selectedLaunchVehicle: LaunchVehicleId = 'falcon9';
   let workspace!: EngineeringWorkspace;
 
@@ -69,6 +72,7 @@ async function bootstrap(): Promise<void> {
   const sceneController = new SceneController(assets, hudRootEl, selectSpacecraftById);
 
   const loadScenario = (scenarioId: ScenarioId, keepInstalledProgram: boolean) => {
+    demoRunning = false;
     const prevCraft = spacecraftManager.activeSpacecraft;
     const prevFc = prevCraft ? fcManager.getComputer(prevCraft.id) : null;
     const savedProg =
@@ -114,7 +118,7 @@ async function bootstrap(): Promise<void> {
   };
 
   const resetAll = () => {
-    loadScenario(currentScenario.id, true);
+    loadScenario(demoRunning ? 'prelaunch' : currentScenario.id, !demoRunning);
   };
 
   const triggerManualStage = () => {
@@ -200,6 +204,25 @@ async function bootstrap(): Promise<void> {
       clock.togglePause();
     },
     onReset: resetAll,
+    onStartDemo: (id) => {
+      const demo = AUTO_DEMOS.find(item => item.id === id);
+      if (!demo) return;
+      selectedLaunchVehicle = 'falcon9';
+      loadScenario(demo.scenario, false);
+      configureDemoVehicle(demo, spacecraftManager);
+      fcManager.reset();
+      fcManager.syncSpacecraft(spacecraftManager);
+      sceneController.reset();
+      cameraController.adaptDistanceForCraft(spacecraftManager.activeDynamics);
+      workspace.syncActiveSpacecraft(spacecraftManager.activeId);
+      workspace.setMode('CLOSED');
+      const program = demo.program;
+      fcManager.installProgram(spacecraftManager.activeId, program.id, program.name, program.language, program.code);
+      fcManager.startProgram(spacecraftManager.activeSpacecraft, spacecraftManager, planet);
+      demoRunning = true;
+      clock.setTimeScale(2);
+      spacecraftManager.pushEvent('AUTOMATIC DEMO', demo.name + ' — Esc for manual override.', 'info');
+    },
     onSelectLaunchVehicle: (id) => {
       selectedLaunchVehicle = id;
       loadScenario('prelaunch', true);

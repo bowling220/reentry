@@ -72,6 +72,8 @@ export function buildProgramTelemetry(
       headingDeg: t.yawHeadingDeg,
       rollDeg: t.rollDeg,
       tiltFromVerticalDeg: t.tiltFromVerticalDeg,
+      noseLocal: { ...t.noseLocal },
+      rightLocal: { ...t.rightLocal },
       angularVelocityBody: {
         x: dyn.angVelBody.x,
         y: dyn.angVelBody.y,

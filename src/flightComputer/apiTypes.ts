@@ -62,6 +62,8 @@ export interface ReentryTelemetry {
     rollDeg: number;
     tiltFromVerticalDeg: number;
     angularVelocityBody: { x: number; y: number; z: number };
+    noseLocal: { x: number; y: number; z: number };
+    rightLocal: { x: number; y: number; z: number };
   };
   acceleration: {
     feltMs2: number;

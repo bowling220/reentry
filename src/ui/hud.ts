@@ -6,6 +6,7 @@ import { TelemetrySnapshot } from '../simulation/telemetry';
 import { RendererBackendName } from '../rendering/rendererManager';
 import { NavballRenderer } from './navball';
 import { LAUNCH_VEHICLES, LaunchVehicleId } from '../config/launchVehicles';
+import { AUTO_DEMOS } from '../flightComputer/demoPrograms';
 
 export interface HudCallbacks {
   onLaunch: () => void;
@@ -13,6 +14,7 @@ export interface HudCallbacks {
   onTogglePause: () => void;
   onReset: () => void;
   onSelectLaunchVehicle: (id: LaunchVehicleId) => void;
+  onStartDemo: (id: string) => void;
   onSelectCamera: (mode: CameraMode) => void;
   onSelectTimeWarp: (scale: number) => void;
   onToggleSasMode: () => void;
@@ -78,6 +80,13 @@ export class FlightHud {
       <!-- Floating Show-HUD Pill (visible only in Hide-HUD Cinematic Mode) -->
       <button class="hud-btn show-hud-pill hidden" id="btn-show-hud">SHOW HUD [U]</button>
 
+      <section class="auto-demo-dialog hidden" id="auto-demo-dialog" role="dialog" aria-label="Automatic demo flights">
+        <div class="auto-demo-title"><h2>AUTOMATIC DEMO FLIGHTS</h2><button class="hud-btn" id="btn-close-demos">CLOSE</button></div>
+        <p>Pick a flight, sit back, and watch. Starting a demo resets the current flight and runs the included JavaScript template on a reusable REENTRY-9 booster.</p>
+        ${AUTO_DEMOS.map(demo => `<article class="auto-demo-card"><div><h3>${demo.name}</h3><p>${demo.description}</p></div><button class="hud-btn primary" data-start-demo="${demo.id}">START ${demo.id === 'hop' ? 'QUICK HOP' : demo.id === 'landing' ? 'LANDING PREVIEW' : 'SPACE & RETURN'}</button></article>`).join('')}
+        <p>Starts at 2× speed. Press <strong>Esc</strong> for manual override, or <strong>RESET</strong> to end the demo. The editable templates are in the Flight Computer's program library.</p>
+      </section>
+
       <!-- Main HUD Wrapper (hidden cleanly in Cinematic Mode) -->
       <div class="hud-chrome" id="hud-chrome">
         <!-- Top Mission Control Status Strip -->
@@ -107,6 +116,7 @@ export class FlightHud {
             </div>
             <button class="hud-btn map-toggle-btn" id="btn-map" title="Toggle 3D Orbital Map (M)">MAP [M]</button>
             <button class="hud-btn fc-toggle-btn" id="btn-fc" title="Toggle Flight Computer IDE (F)">FLIGHT COMP [F]</button>
+            <button class="hud-btn" id="btn-demos">AUTO DEMOS</button>
           </div>
 
           <div class="hud-sys-right">
@@ -447,6 +457,15 @@ export class FlightHud {
   }
 
   private bindEvents(): void {
+    const demos = this.root.querySelector<HTMLElement>('#auto-demo-dialog')!;
+    this.root.querySelector('#btn-demos')!.addEventListener('click', () => demos.classList.toggle('hidden'));
+    this.root.querySelector('#btn-close-demos')!.addEventListener('click', () => demos.classList.add('hidden'));
+    this.root.querySelectorAll<HTMLButtonElement>('[data-start-demo]').forEach(button => {
+      button.addEventListener('click', () => {
+        demos.classList.add('hidden');
+        this.callbacks.onStartDemo(button.dataset.startDemo!);
+      });
+    });
     this.root.querySelector<HTMLSelectElement>('#launch-vehicle')!.addEventListener('change', (event) => {
       const id = (event.target as HTMLSelectElement).value;
       if (id === 'falcon9' || id === 'saturn-v') this.callbacks.onSelectLaunchVehicle(id);

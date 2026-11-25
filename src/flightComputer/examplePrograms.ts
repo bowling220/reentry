@@ -1,4 +1,5 @@
 import { ProgramLanguage } from './apiTypes';
+import { AUTO_DEMOS } from './demoPrograms';
 
 export interface StoredProgram {
   id: string;
@@ -10,6 +11,7 @@ export interface StoredProgram {
 }
 
 export const EXAMPLE_PROGRAMS: StoredProgram[] = [
+  ...AUTO_DEMOS.map(demo => demo.program),
   {
     id: 'ex-js-telemetry',
     name: '01_telemetry_logger.js',
@@ -390,7 +392,7 @@ export const API_DOCUMENTATION_HTML = `
       <li><code>t.vehicle</code>: <code>id, name, role, status, massKg, propellantKg, propellantFraction, hasLandingGear, canStage</code></li>
       <li><code>t.position</code>: <code>altitudeASL, altitudeAGL, latitudeDeg, longitudeDeg, distanceFromPadM</code></li>
       <li><code>t.velocity</code>: <code>vertical, horizontal, surfaceSpeed, inertialSpeed, mach, surfaceLocal.{east,up,south}</code></li>
-      <li><code>t.attitude</code>: <code>pitchDeg, headingDeg, rollDeg, tiltFromVerticalDeg, angularVelocityBody.{x,y,z}</code></li>
+      <li><code>t.attitude</code>: <code>pitchDeg, headingDeg, rollDeg, tiltFromVerticalDeg, angularVelocityBody.{x,y,z}, noseLocal.{x,y,z}, rightLocal.{x,y,z}</code>. Local direction vectors use east/up/south axes.</li>
       <li><code>t.propulsion</code>: <code>engineIgnited, throttle, thrustN</code></li>
       <li><code>t.environment</code>: <code>atmosphericDensity, dynamicPressurePa, gravityMs2, inSpace, reentryHeat</code></li>
       <li><code>t.orbit</code>: <code>valid, classification, apoapsisM, periapsisM, inclinationDeg, eccentricity, periodS, timeToApoapsisS, timeToPeriapsisS</code></li>

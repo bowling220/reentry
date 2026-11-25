@@ -810,6 +810,10 @@ export class RocketFlightDynamics {
 
   private updateFlightStatus(altASL: number, altAGL: number): void {
     if (this.status === 'CRASHED' || this.status === 'PRELAUNCH') return;
+    // Landing gear can briefly lose contact or slide as Rapier settles. Keep a
+    // confirmed touchdown latched through that motion instead of alternating
+    // LANDED / ASCENT and emitting a fresh touchdown every physics step.
+    if (this.status === 'LANDED' && !this.engineIgnited && altAGL < 5) return;
 
     const up = normVec3(this.posECEF);
     const vertVel = dotVec3(this.velECEF, up);
