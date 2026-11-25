@@ -1,5 +1,6 @@
 import { ProgramLanguage } from './apiTypes';
 import { AUTO_DEMOS } from './demoPrograms';
+import { RETURN_HOME_PROGRAM } from './coastalProgram';
 
 export interface StoredProgram {
   id: string;
@@ -12,6 +13,7 @@ export interface StoredProgram {
 
 export const EXAMPLE_PROGRAMS: StoredProgram[] = [
   ...AUTO_DEMOS.map(demo => demo.program),
+  RETURN_HOME_PROGRAM,
   {
     id: 'ex-js-telemetry',
     name: '01_telemetry_logger.js',

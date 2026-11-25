@@ -7,6 +7,7 @@ import { FlightComputerManager } from './flightComputer/flightComputerManager';
 import { FlightDataRecorder } from './flightComputer/flightRecorder';
 import { ProgramLibrary } from './flightComputer/programLibrary';
 import { AUTO_DEMOS } from './flightComputer/demoPrograms';
+import { RETURN_HOME_PROGRAM } from './flightComputer/coastalProgram';
 import { configureDemoVehicle } from './simulation/demoFlights';
 import { InputManager } from './input/inputManager';
 import { RendererManager } from './rendering/rendererManager';
@@ -59,6 +60,8 @@ async function bootstrap(): Promise<void> {
 
   let currentScenario = FLIGHT_SCENARIOS[0];
   let demoRunning = false;
+  let coastalTourCraftId: string | null = null;
+  let lastCoastalPhase = '';
   let selectedLaunchVehicle: LaunchVehicleId = 'falcon9';
   let workspace!: EngineeringWorkspace;
 
@@ -73,6 +76,8 @@ async function bootstrap(): Promise<void> {
 
   const loadScenario = (scenarioId: ScenarioId, keepInstalledProgram: boolean) => {
     demoRunning = false;
+    coastalTourCraftId = null;
+    lastCoastalPhase = '';
     const prevCraft = spacecraftManager.activeSpacecraft;
     const prevFc = prevCraft ? fcManager.getComputer(prevCraft.id) : null;
     const savedProg =
@@ -220,8 +225,21 @@ async function bootstrap(): Promise<void> {
       fcManager.installProgram(spacecraftManager.activeId, program.id, program.name, program.language, program.code);
       fcManager.startProgram(spacecraftManager.activeSpacecraft, spacecraftManager, planet);
       demoRunning = true;
+      coastalTourCraftId = id === 'coastal' ? spacecraftManager.activeId : null;
       clock.setTimeScale(2);
       spacecraftManager.pushEvent('AUTOMATIC DEMO', demo.name + ' — Esc for manual override.', 'info');
+    },
+    onReturnHome: () => {
+      const craft = spacecraftManager.activeSpacecraft;
+      if (craft.id !== coastalTourCraftId || !craft.dynamics.hasLiftedOff ||
+          craft.dynamics.status === 'LANDED' || craft.dynamics.status === 'CRASHED' || craft.dynamics.propellantKg <= 0) return;
+      input.clear();
+      const program = RETURN_HOME_PROGRAM;
+      fcManager.installProgram(craft.id, program.id, program.name, program.language, program.code);
+      fcManager.startProgram(craft, spacecraftManager, planet);
+      if (clock.paused) clock.togglePause();
+      clock.setTimeScale(2);
+      spacecraftManager.pushEvent('RETURN HOME ENGAGED', 'Flying to LZ-1 for an automatic landing. Esc for manual override.', 'success');
     },
     onSelectLaunchVehicle: (id) => {
       selectedLaunchVehicle = id;
@@ -435,6 +453,15 @@ async function bootstrap(): Promise<void> {
     }
 
     const activeFc = fcManager.getComputer(activeCraft.id);
+    const coastalActive = activeCraft.id === coastalTourCraftId;
+    const coastalPhase = String(activeFc.customVariables.phase ?? '');
+    const returningHome = coastalActive && activeFc.authority === 'PROGRAM' &&
+      (activeFc.programId === RETURN_HOME_PROGRAM.id || ['RETURN', 'LANDING', 'TOUCHDOWN', 'DONE'].includes(coastalPhase));
+    if (coastalActive && coastalPhase !== lastCoastalPhase) {
+      lastCoastalPhase = coastalPhase;
+      if (coastalPhase === 'HOLD') spacecraftManager.pushEvent('COASTAL WAYPOINT REACHED', 'Press RETURN HOME when ready. Automatic reserve protection remains active.', 'info');
+      if (coastalPhase === 'RETURN' && activeFc.programId !== RETURN_HOME_PROGRAM.id) spacecraftManager.pushEvent('AUTOMATIC RETURN', 'Tour complete or fuel reserve reached. Returning to LZ-1.', 'info');
+    }
 
     hud.update(
       telemetry,
@@ -450,6 +477,8 @@ async function bootstrap(): Promise<void> {
         authority: activeFc.authority,
         workspaceOpen: workspace.mode !== 'CLOSED',
         scenarioBadge: currentScenario.isSandbox ? `SANDBOX` : null,
+        canReturnHome: coastalActive && activeDyn.hasLiftedOff && activeDyn.propellantKg > 0 && !['LANDED', 'CRASHED'].includes(activeDyn.status),
+        returningHome: returningHome && activeDyn.status !== 'LANDED',
       }
     );
 

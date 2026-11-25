@@ -12,6 +12,7 @@ import { computeTelemetry } from '../src/simulation/telemetry';
 import { NEUTRAL_FLIGHT_INPUT } from '../src/simulation/flightDynamics';
 import { configureDemoVehicle } from '../src/simulation/demoFlights';
 import { ProgramLibrary } from '../src/flightComputer/programLibrary';
+import { RETURN_HOME_PROGRAM } from '../src/flightComputer/coastalProgram';
 
 await LocalPhysicsWorld.initRapier();
 
@@ -30,14 +31,20 @@ test('new demos appear in an existing local library without overwriting player e
     assert.equal(library.getById(AUTO_DEMOS[0].program.id)?.code, '// customized hop');
     assert.ok(library.getById(AUTO_DEMOS[1].program.id));
     assert.ok(library.getById(AUTO_DEMOS[2].program.id));
-    assert.equal(library.getAll().length, 4);
+    assert.ok(library.getById(RETURN_HOME_PROGRAM.id));
+    assert.equal(library.getAll().length, AUTO_DEMOS.length + 2);
   } finally {
     if (previous === undefined) delete globals.localStorage;
     else globals.localStorage = previous;
   }
 });
-for (const hz of [5, 10]) for (const demo of AUTO_DEMOS) {
-  test(`automatic demo completes a real landing at ${hz} Hz: ${demo.name}`, () => {
+const coastal = AUTO_DEMOS.find(demo => demo.id === 'coastal')!;
+const flights = [
+  ...AUTO_DEMOS.map(demo => ({ demo, returnAt: null as number | null })),
+  ...[1, 40, 110, 150].map(returnAt => ({ demo: coastal, returnAt })),
+];
+for (const hz of [5, 10]) for (const { demo, returnAt } of flights) {
+  test(`automatic landing at ${hz} Hz: ${demo.name}${returnAt === null ? '' : `; RETURN HOME at ${returnAt}s`}`, () => {
     const manager = new SpacecraftManager();
     const planet = new PlanetSimulation();
     loadFlightScenario(demo.scenario, manager, planet);
@@ -53,16 +60,27 @@ for (const hz of [5, 10]) for (const demo of AUTO_DEMOS) {
       setLandingGear: (value: boolean) => { raw.deployGear = value; },
       setAttitude: (p: number, y: number, r: number) => { raw.pitch = p; raw.yaw = y; raw.roll = r; },
     };
-    const context = createContext({ api, t: null });
+    let context = createContext({ api, t: null });
     new Script(demo.program.code).runInContext(context);
     const init = new Script('init(api, t)'), update = new Script('update(t, api)');
     const snapshot = () => buildProgramTelemetry(craft, computeTelemetry(dyn, planet), manager, planet, 1 / hz);
     context.t = snapshot(); init.runInContext(context);
     let command = validateProgramCommand({}, { simTime: 0, hasEngine: true, hasLandingGear: true, canStage: true, stageBlockedReason: null, isDestroyed: false }).command;
     let maxAltitude = 0;
+    let maxHomeDistance = 0;
+    let returnRequested = false;
     let landedAt = -1;
     for (let i = 0; i < 60 * 1000; i++) {
       if (i % (60 / hz) === 0) {
+        if (returnAt !== null && !returnRequested && planet.planetTimeS >= returnAt) {
+          if (returnAt === 150) assert.equal(phase, 'HOLD', 'can request return after reaching the destination');
+          const positionBefore = { ...dyn.posECEF };
+          context = createContext({ api, t: snapshot() });
+          new Script(RETURN_HOME_PROGRAM.code).runInContext(context);
+          init.runInContext(context);
+          assert.deepEqual(dyn.posECEF, positionBefore, 'return guidance takes over in flight without teleporting');
+          returnRequested = true;
+        }
         raw = {}; context.t = snapshot(); update.runInContext(context);
         const result = validateProgramCommand(raw, { simTime: planet.planetTimeS, hasEngine: true,
           hasLandingGear: true, canStage: manager.getNextStageAction().available, stageBlockedReason: null, isDestroyed: false });
@@ -77,12 +95,13 @@ for (const hz of [5, 10]) for (const demo of AUTO_DEMOS) {
         ignitePressed: command.ignite }, planet);
       command.ignite = false; command.shutdown = false;
       maxAltitude = Math.max(maxAltitude, dyn.getAltitudeAGL());
+      maxHomeDistance = Math.max(maxHomeDistance, snapshot().landingTarget.distanceM);
       if (landedAt >= 0) assert.equal(dyn.status, 'LANDED', 'confirmed touchdown remains stable while the gear settles');
       if (dyn.status === 'LANDED' && landedAt < 0) landedAt = i;
       if (dyn.status === 'CRASHED' || (landedAt >= 0 && i - landedAt >= 180)) break;
     }
     const final = snapshot();
-    console.log(demo.id, { maxAltitude, seconds: planet.planetTimeS, distanceFromLzM: final.landingTarget.distanceM });
+    console.log(demo.id, { returnAt, maxAltitude, maxHomeDistance, seconds: planet.planetTimeS, distanceFromLzM: final.landingTarget.distanceM });
     assert.equal(dyn.status, 'LANDED', `${demo.id} ended in ${dyn.status}, phase ${phase}, altitude ${dyn.getAltitudeAGL()}`);
     assert.equal(dyn.gearDeployed, true);
     assert.equal(manager.consumeEvents().filter(event => event.title === 'TOUCHDOWN').length, 1);
@@ -90,5 +109,10 @@ for (const hz of [5, 10]) for (const demo of AUTO_DEMOS) {
     assert.ok(final.velocity.horizontal < 8.5, 'lands without excessive lateral drift');
     if (demo.id === 'space-return') assert.ok(maxAltitude > 100000);
     if (demo.id === 'hop') assert.ok(maxAltitude > 800 && maxAltitude < 1500);
+    if (demo.id === 'coastal') {
+      assert.ok(final.landingTarget.distanceM < 43, 'touches down inside LZ-1');
+      if (returnAt === null) assert.ok(maxHomeDistance > 3800, 'actually travels several kilometers downrange');
+      else assert.equal(returnRequested, true);
+    }
   });
 }

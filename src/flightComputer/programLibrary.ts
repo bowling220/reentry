@@ -1,6 +1,7 @@
 import { ProgramLanguage } from './apiTypes';
 import { EXAMPLE_PROGRAMS, StoredProgram } from './examplePrograms';
 import { AUTO_DEMOS } from './demoPrograms';
+import { RETURN_HOME_PROGRAM } from './coastalProgram';
 
 const DB_NAME = 'reentry_flight_programs_v1';
 const STORE_NAME = 'programs';
@@ -41,7 +42,7 @@ export class ProgramLibrary {
       }
     }
     // Add newly shipped demos to existing libraries without replacing saved edits.
-    for (const { program } of AUTO_DEMOS) {
+    for (const program of [...AUTO_DEMOS.map(demo => demo.program), RETURN_HOME_PROGRAM]) {
       if (!this.programs.some(p => p.id === program.id)) {
         this.programs.push({ ...program });
         await this.persistOne(program);

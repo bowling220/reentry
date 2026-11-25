@@ -15,6 +15,7 @@ export interface HudCallbacks {
   onReset: () => void;
   onSelectLaunchVehicle: (id: LaunchVehicleId) => void;
   onStartDemo: (id: string) => void;
+  onReturnHome: () => void;
   onSelectCamera: (mode: CameraMode) => void;
   onSelectTimeWarp: (scale: number) => void;
   onToggleSasMode: () => void;
@@ -33,6 +34,8 @@ export interface HudFlightComputerState {
   authority: ControlAuthority;
   workspaceOpen: boolean;
   scenarioBadge: string | null;
+  canReturnHome: boolean;
+  returningHome: boolean;
 }
 
 /**
@@ -83,7 +86,7 @@ export class FlightHud {
       <section class="auto-demo-dialog hidden" id="auto-demo-dialog" role="dialog" aria-label="Automatic demo flights">
         <div class="auto-demo-title"><h2>AUTOMATIC DEMO FLIGHTS</h2><button class="hud-btn" id="btn-close-demos">CLOSE</button></div>
         <p>Pick a flight, sit back, and watch. Starting a demo resets the current flight and runs the included JavaScript template on a reusable REENTRY-9 booster.</p>
-        ${AUTO_DEMOS.map(demo => `<article class="auto-demo-card"><div><h3>${demo.name}</h3><p>${demo.description}</p></div><button class="hud-btn primary" data-start-demo="${demo.id}">START ${demo.id === 'hop' ? 'QUICK HOP' : demo.id === 'landing' ? 'LANDING PREVIEW' : 'SPACE & RETURN'}</button></article>`).join('')}
+        ${AUTO_DEMOS.map(demo => `<article class="auto-demo-card"><div><h3>${demo.name}</h3><p>${demo.description}</p></div><button class="hud-btn primary" data-start-demo="${demo.id}">START ${demo.id === 'coastal' ? 'COASTAL CRUISE' : demo.id === 'hop' ? 'QUICK HOP' : demo.id === 'landing' ? 'LANDING PREVIEW' : 'SPACE & RETURN'}</button></article>`).join('')}
         <p>Starts at 2× speed. Press <strong>Esc</strong> for manual override, or <strong>RESET</strong> to end the demo. The editable templates are in the Flight Computer's program library.</p>
       </section>
 
@@ -355,6 +358,7 @@ export class FlightHud {
             </div>
             <div class="deck-row">
               <button class="hud-btn primary" id="btn-launch">IGNITE / LAUNCH</button>
+              <button class="hud-btn" id="btn-return-home" disabled title="Start Coastal cruise in AUTO DEMOS to enable return guidance">RETURN HOME</button>
               <button class="hud-btn" id="btn-pause">PAUSE</button>
               <button class="hud-btn danger" id="btn-reset">RESET</button>
             </div>
@@ -434,6 +438,7 @@ export class FlightHud {
       stageStack: q('stage-stack'),
       btnStage: q('btn-stage'),
       btnLaunch: q('btn-launch'),
+      btnReturnHome: q('btn-return-home'),
       btnPause: q('btn-pause'),
       btnReset: q('btn-reset'),
       btnSas: q('btn-sas'),
@@ -457,6 +462,7 @@ export class FlightHud {
   }
 
   private bindEvents(): void {
+    this.els.btnReturnHome.addEventListener('click', () => this.callbacks.onReturnHome());
     const demos = this.root.querySelector<HTMLElement>('#auto-demo-dialog')!;
     this.root.querySelector('#btn-demos')!.addEventListener('click', () => demos.classList.toggle('hidden'));
     this.root.querySelector('#btn-close-demos')!.addEventListener('click', () => demos.classList.add('hidden'));
@@ -565,6 +571,11 @@ export class FlightHud {
     this.navball.render(t);
 
     const activeCraft = manager.activeSpacecraft;
+    const returnButton = this.els.btnReturnHome as HTMLButtonElement;
+    returnButton.disabled = !fcState?.canReturnHome || !!fcState?.returningHome;
+    returnButton.textContent = fcState?.returningHome ? 'RETURNING HOME' : 'RETURN HOME';
+    returnButton.classList.toggle('active', !!fcState?.returningHome);
+    returnButton.title = fcState?.canReturnHome ? 'Fly back to LZ-1 and land automatically' : 'Available during the Coastal cruise demo';
     const vehicleSelect = this.root.querySelector<HTMLSelectElement>('#launch-vehicle')!;
     vehicleSelect.value = manager.launchVehicleId;
     vehicleSelect.disabled = activeCraft.dynamics.status !== 'PRELAUNCH';

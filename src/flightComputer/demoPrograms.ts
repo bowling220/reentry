@@ -1,5 +1,6 @@
 import type { StoredProgram } from './examplePrograms';
 import type { ScenarioId } from '../simulation/scenarios';
+import { COASTAL_PROGRAM } from './coastalProgram';
 
 export function returnFlightSource(targetApogeeM: number, landingOnly = false): string {
   return `// REENTRY automatic flight demo — Falcon 9 / REENTRY-9 only.
@@ -88,6 +89,7 @@ function update(t, api) {
 }
 
 export const AUTO_DEMOS: Array<{ id: string; name: string; description: string; scenario: ScenarioId; boosterOnly?: boolean; program: StoredProgram }> = [
+  { id: 'coastal', name: 'Coastal cruise — return on demand', description: 'Fly about 4 km along the coast at 1.8 km altitude. Press RETURN HOME to fly back to LZ-1 and land. Fuel protection returns automatically after a short hold.', scenario: 'prelaunch', boosterOnly: true, program: COASTAL_PROGRAM },
   { id: 'hop', name: 'Quick launch & landing', description: 'About a minute: the reusable booster rises to 1 km, coasts, then returns toward LZ-1 and lands automatically.', scenario: 'prelaunch', boosterOnly: true,
     program: { id: 'demo-hop-v1', name: '04_auto_launch_and_land.js', language: 'javascript', isExample: true, updatedAt: 10, code: returnFlightSource(1000) } },
   { id: 'space-return', name: 'Space & return', description: 'A longer vertical sightseeing flight above 100 km, followed by an automatic return and landing. Reusable booster only, with fuel reserved for the return.', scenario: 'prelaunch', boosterOnly: true,

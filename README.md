@@ -22,6 +22,7 @@ engineering test scenarios use REENTRY-9; standard prelaunch uses your selected 
 
 Click **AUTO DEMOS** in the top bar to watch a ready-made flight:
 
+- **Coastal cruise — return on demand**: fly about 4 km along the coast at 1.8 km altitude, then click **RETURN HOME** beside the launch button to fly back to LZ-1 and land. The button also works during the outbound flight. A short waypoint hold or the fuel reserve triggers an automatic return if you leave it flying.
 - **Quick launch & landing**: a reusable booster hops to 1 km and lands in about a minute of simulation time.
 - **Space & return**: a reusable booster climbs above 100 km and returns in about nine minutes of simulation time.
 - **Landing preview**: a booster starts 950 m above LZ-1 and lands in about 30 seconds of simulation time.
@@ -31,7 +32,9 @@ control; **RESET** ends the demo. Scripts `04_auto_launch_and_land.js`,
 `05_auto_space_and_return.js`, and `06_auto_booster_landing.js` are installed in
 the local program library without overwriting existing saved programs. Use the
 demo buttons to prepare the matching reusable booster, rather than running a
-return script on the fully assembled orbital stack or Saturn V.
+return script on the fully assembled orbital stack or Saturn V. The coastal
+templates are `07_coastal_cruise.js` and `08_return_home.js`; return guidance
+takes over the current flight without resetting or moving the vehicle instantly.
 
 ## Develop
 
